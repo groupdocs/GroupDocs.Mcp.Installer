@@ -40,6 +40,7 @@ param(
   [string[]] $Clients,
   [string]   $Version,
   [switch]   $Interactive,
+  [switch]   $SkipPreflight,
   [switch]   $Verify,
   [switch]   $Prewarm,
   [switch]   $EmitCompose,
@@ -175,6 +176,55 @@ Write-Info "channel=$channel  registry=$registry  version=$version"
 if ($outputPath -ne '') { Write-Info "storage=$storagePath  output=$outputPath" }
 else                    { Write-Info "storage=$storagePath  output=(same as storage)" }
 if ($licensePath -ne '') { Write-Info "license=$licensePath" } else { Write-Info "license=(evaluation mode)" }
+
+# --- Prerequisite preflight (same checks as setup/<os> --check) --------------
+# Runs BEFORE any filesystem mutation: a config that points at a missing runtime
+# would otherwise fail at first launch inside the AI client, which is the worst
+# place to discover it. -SkipPreflight bypasses; -DryRun warns and continues.
+function Get-SetupCommand {
+  if (Test-IsWindows) { return "powershell -ExecutionPolicy Bypass -File setup\windows.ps1 -Channel $channel" }
+  if (Test-IsMac)     { return "bash setup/macos.sh --channel $channel" }
+  return "bash setup/linux.sh --channel $channel"
+}
+function Test-Prerequisites {
+  $problems = @()
+  if ($channel -eq 'docker') {
+    if (-not (Test-CommandExists 'docker')) {
+      $problems += "docker CLI not found on PATH"
+    } else {
+      & docker version --format '{{.Server.Version}}' 2>$null | Out-Null
+      if ($LASTEXITCODE -ne 0) { $problems += "docker daemon not reachable (is Docker Desktop / dockerd running?)" }
+    }
+  } else {
+    $dnxName = if (Test-IsWindows) { 'dnx.cmd' } else { 'dnx' }
+    if (-not (Test-CommandExists $dnxName)) { $problems += "'$dnxName' not found - the nuget channel needs the .NET 10 SDK" }
+  }
+  return @($problems)
+}
+if (-not $SkipPreflight) {
+  $missingPrereqs = Test-Prerequisites
+  if ($missingPrereqs.Count -gt 0) {
+    foreach ($m in $missingPrereqs) { Write-Warn2 $m }
+    $setupCmd = Get-SetupCommand
+    if ($Interactive -and -not $DryRun) {
+      $ans = Read-Host "  Run the prerequisite setup now? ($setupCmd) [Y/n]"
+      if ("$ans".Trim().ToLower() -notin @('n','no')) {
+        $setupScript = if (Test-IsWindows) { Join-Path $PSScriptRoot 'setup/windows.ps1' }
+                       elseif (Test-IsMac) { Join-Path $PSScriptRoot 'setup/macos.sh' }
+                       else                { Join-Path $PSScriptRoot 'setup/linux.sh' }
+        if (Test-IsWindows) { & powershell -ExecutionPolicy Bypass -File $setupScript -Channel $channel }
+        else                { & bash $setupScript --channel $channel }
+        $missingPrereqs = Test-Prerequisites
+      }
+    }
+    if ($missingPrereqs.Count -gt 0) {
+      if ($DryRun) { Write-Warn2 "(dry-run) continuing despite missing prerequisites - fix with:  $setupCmd" }
+      else { throw "Missing prerequisites for the '$channel' channel. Fix with:  $setupCmd  (or re-run with -SkipPreflight)" }
+    }
+  } else {
+    Write-Info "prerequisites OK ($channel channel)"
+  }
+}
 
 # Fail early on obviously wrong shared paths (placeholder or missing license file).
 if ($licensePath -ne '' -and -not (Test-Path $licensePath)) {

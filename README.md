@@ -9,6 +9,10 @@ and/or emits a `docker-compose.yml`. Cross-platform (PowerShell 5.1 and 7+).
 ./verify-groupdocs-mcp.ps1                   # any time later: re-verify every installed product
 ```
 
+Fresh machine? [`setup/`](setup/) has one-shot prerequisite bootstrappers per OS
+(macOS / Linux / Windows — PowerShell, Docker or the .NET 10 SDK, native deps).
+Ready-made configurations for common setups live in [`samples/`](samples/).
+
 ## Files
 
 | File | Purpose |
@@ -100,6 +104,7 @@ publish matrix). NuGet is convenient for .NET devs and per-product subsets.
 | Switch | Effect |
 |---|---|
 | `-Interactive` | Guided wizard; saves answers to the config file. Also auto-runs when no config exists. |
+| `-SkipPreflight` | Skip the prerequisite preflight. By default the installer verifies the channel's runtime (docker daemon reachable / .NET 10 SDK + `dnx` present) **before touching anything**; on failure it prints the exact `setup/<os>` command (and the wizard offers to run it). Dry-runs warn and continue. |
 | `-Verify` | After installing: warm caches, then run the verifier against the same products/channel (auto level). Exit code = verification result. The wizard offers this as its last question. |
 | `-DryRun` | Print everything, write nothing. Always preview first. |
 | `-Prewarm` | docker: `docker pull` each image. nuget: download **and first-launch** each package with stdin closed (server reads EOF and exits cleanly) — prevents the cold-cache failure where a client's first in-pipe launch of a large package dies before the download finishes. |

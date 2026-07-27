@@ -19,6 +19,8 @@ install-groupdocs-mcp.ps1     <- installer + wizard (-Interactive) + prewarm + p
 verify-groupdocs-mcp.ps1      <- MCP handshake / auto / toolcall verification over stdio
 uninstall-groupdocs-mcp.ps1   <- configurable removal (defaults: ALL products from ALL clients)
 changelog/                    <- one MD file per change (see changelog/README.md)
+samples/                      <- ready-to-run config examples per client/channel (dry-run validated)
+setup/                        <- per-OS prerequisite bootstrappers (macos.sh, linux.sh, windows.ps1)
 ```
 
 ## Hard-won rules — read before editing

@@ -84,11 +84,12 @@ already written) with a parser stack trace and no guidance.
 **Fix:** try/catch per client: report the path, skip that client, continue, exit non-zero
 at the end. Never leave the user guessing which file is broken.
 
-### 2.3 **No Docker preflight** `[ux]`
-With the daemon stopped, install happily writes configs, then `-Prewarm`/`-Verify`/first
-agent call fail with the npipe error (observed live during testing).
-**Fix:** on `channel=docker`, run `docker version` once up front; warn loudly (or prompt
-in the wizard) when the daemon is unreachable.
+### 2.3 ~~No Docker preflight~~ — **FIXED 2026-07-27**
+Both the installer and the verifier now preflight the channel runtime (docker daemon
+reachable / .NET 10 SDK + `dnx` present) **before any filesystem mutation**. On failure:
+real runs abort with the exact `setup/<os>` command to fix it (wizard offers to run it
+inline), dry-runs warn and continue, `-SkipPreflight` bypasses, and the verifier exits 2.
+Verified: happy path, missing-runtime throw, dry-run continue, verify exit 2.
 
 ### 2.4 **Single global version pin breaks mixed product sets** `[design]`
 Products currently sit at different latest versions (26.7.2 / 26.7.3 / 26.7.4), so
@@ -156,7 +157,7 @@ from NuGet/GHCR at install time (see backlog 4.4).
 | ~~2~~ | ~~verify toolcall: treat errors-as-text responses as failures~~ — fixed | ~~bug~~ |
 | 3 | installer: validate client/product names before the first write (no half-applied installs) | bug, ux |
 | 4 | Merge/Remove: survive invalid JSON in one client config; skip + report instead of crashing | bug, ux |
-| 5 | docker channel: preflight `docker version` and warn when the daemon is down | ux |
+| ~~5~~ | ~~docker channel: preflight when the daemon is down~~ — fixed (installer + verifier, `setup/<os>` pointer) | ~~ux~~ |
 | 6 | Version pin: document per-set semantics; add per-product resolution (backlog 4.4) | design, docs |
 | 7 | Extract shared module (client map, prewarm, IO helpers) + Pester suite | refactor, tests |
 | 8 | Uninstall: `-RemoveImages` should enumerate all local tags of the product images | ux |

@@ -114,6 +114,26 @@ Write-Head "GroupDocs MCP verify"
 Write-Info "channel=$channel  level=$level  timeout=${TimeoutSec}s"
 Write-Info "products: $($resolved -join ', ')"
 
+# Prerequisite preflight - fail fast (exit 2 = nothing verified) instead of
+# reporting a per-product failure for a runtime that simply is not there.
+if ($channel -eq 'docker') {
+  $dockerOk = $false
+  if (Get-Command docker -ErrorAction SilentlyContinue) {
+    & docker version --format '{{.Server.Version}}' 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { $dockerOk = $true }
+  }
+  if (-not $dockerOk) {
+    Write-Fail "docker daemon not reachable - start Docker Desktop / dockerd (setup/<os> script installs it)."
+    exit 2
+  }
+} else {
+  $dnxProbe = if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows) { 'dnx.cmd' } else { 'dnx' }
+  if (-not (Get-Command $dnxProbe -ErrorAction SilentlyContinue)) {
+    Write-Fail "'$dnxProbe' not found - the nuget channel needs the .NET 10 SDK (setup/<os> script installs it)."
+    exit 2
+  }
+}
+
 # --- Build the launch command for one product ------------------------------
 function Get-Launch ($key) {
   $tag = if ($version -eq 'latest') { 'latest' } else { $version }

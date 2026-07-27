@@ -1,30 +1,14 @@
 {
-  "$schema": "./manifest.json",
-
-  "channel": "docker",
-  "registry": "ghcr",
-  "clients": ["claude-desktop", "vscode"],
-  "version": "latest",
-
-  "storagePath": "C:/docs",
-  "outputPath": "",
-  "licensePath": "",
-
-  "products": [
-    "metadata",
-    "conversion",
-    "comparison"
-  ],
-
-  "verify": {
-    "level": "auto",
-    "sampleFile": "sample.docx",
-    "cases": {
-      "metadata":   { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
-      "conversion": { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
-      "signature":  { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
-      "parser":     { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
-      "total":      { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } }
-    }
-  }
+    "channel":  "docker",
+    "registry":  "ghcr",
+    "clients":  [
+                    "cursor"
+                ],
+    "version":  "latest",
+    "storagePath":  "d:\\Storage\\Documents\\",
+    "outputPath":  "d:\\Storage\\Output\\",
+    "licensePath":  "d:\\Storage\\Licenses\\Conholdate.Total.lic",
+    "products":  [
+                     "parser"
+                 ]
 }

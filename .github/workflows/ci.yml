@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           $bad = $false
-          Get-ChildItem *.ps1 | ForEach-Object {
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
             $t = $null; $errs = $null
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$t, [ref]$errs) | Out-Null
             if ($errs.Count) { Write-Host "::error::$($_.Name): $($errs[0].Message)"; $bad = $true }
@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         run: |
           $bad = $false
-          Get-ChildItem *.ps1 | ForEach-Object {
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
             $bytes = [IO.File]::ReadAllBytes($_.FullName)
             $nonAscii = @($bytes | Where-Object { $_ -gt 127 })
             if ($nonAscii.Count) { Write-Host "::error::$($_.Name) contains $($nonAscii.Count) non-ASCII byte(s)"; $bad = $true }
