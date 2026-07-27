@@ -1,0 +1,28 @@
+{
+  "$schema": "./manifest.json",
+
+  "channel": "docker",
+  "registry": "ghcr",
+  "clients": ["claude-desktop", "vscode"],
+  "version": "latest",
+
+  "storagePath": "C:/docs",
+  "outputPath": "",
+  "licensePath": "",
+
+  "products": [
+    "metadata",
+    "conversion",
+    "comparison"
+  ],
+
+  "verify": {
+    "level": "handshake",
+    "sampleFile": "sample.docx",
+    "cases": {
+      "metadata":   { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
+      "conversion": { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
+      "signature":  { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } }
+    }
+  }
+}

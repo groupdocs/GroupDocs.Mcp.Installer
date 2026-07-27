@@ -1,0 +1,506 @@
+<#
+.SYNOPSIS
+  Config-driven installer that registers GroupDocs MCP servers into one or more
+  AI clients (Claude Desktop, Claude Code, VS Code / Copilot, Visual Studio 2022,
+  Cursor, Windsurf, Cline, Codex CLI) and/or emits a docker-compose.yml.
+  Works cross-platform on PowerShell 5.1 and 7+.
+
+.DESCRIPTION
+  Reads a JSON config (which products, which channel, which clients) plus the
+  product catalog in manifest.json, then generates the correct MCP server
+  entries and merges them into each client's config file (or registers via the
+  client's own CLI where that is the native path: Claude Code, Codex).
+  Optionally pulls Docker images / warms the dnx package cache up front
+  (-Prewarm) and writes a docker-compose.yml (-EmitCompose).
+
+  Run with -Interactive (or with no config file present) for a guided wizard
+  that asks for products, channel, clients, and shared paths, then saves the
+  config for next time.
+
+  Two delivery channels:
+    docker  - self-contained, native deps bundled (recommended cross-platform)
+    nuget   - dnx auto-pull; needs .NET 10 SDK (+ libgdiplus on Linux/macOS)
+
+.EXAMPLE
+  ./install-groupdocs-mcp.ps1 -Interactive
+  ./install-groupdocs-mcp.ps1 -DryRun
+  ./install-groupdocs-mcp.ps1 -Config my.config.json -Prewarm
+  ./install-groupdocs-mcp.ps1 -Channel nuget -Products metadata,conversion -Clients vscode
+  ./install-groupdocs-mcp.ps1 -EmitCompose -DryRun
+#>
+[CmdletBinding()]
+param(
+  [string]   $Config    = (Join-Path $PSScriptRoot 'groupdocs-mcp.config.json'),
+  [string]   $Manifest  = (Join-Path $PSScriptRoot 'manifest.json'),
+  [ValidateSet('docker','nuget')]
+  [string]   $Channel,
+  [ValidateSet('ghcr','dockerhub')]
+  [string]   $Registry,
+  [string[]] $Products,
+  [string[]] $Clients,
+  [string]   $Version,
+  [switch]   $Interactive,
+  [switch]   $Prewarm,
+  [switch]   $EmitCompose,
+  [switch]   $Uninstall,
+  [switch]   $RemoveImages,
+  [switch]   $RemoveCompose,
+  [switch]   $DryRun
+)
+
+$ErrorActionPreference = 'Stop'
+
+$KNOWN_CLIENTS = @('claude-desktop','claude-code','vscode','vscode-workspace','vs2022','cursor','windsurf','cline','codex')
+
+function Write-Info  ($m) { Write-Host "  $m" }
+function Write-Ok    ($m) { Write-Host "  [OK]   $m" -ForegroundColor Green }
+function Write-Warn2 ($m) { Write-Host "  [WARN] $m" -ForegroundColor Yellow }
+function Write-Head  ($m) { Write-Host "`n== $m ==" -ForegroundColor Cyan }
+
+function Get-Json ($path) {
+  if (-not (Test-Path $path)) { throw "File not found: $path" }
+  return (Get-Content -Raw -LiteralPath $path | ConvertFrom-Json)
+}
+
+# UTF-8 WITHOUT BOM on every PowerShell version - PS 5.1's `-Encoding UTF8`
+# writes a BOM, which some client JSON parsers reject.
+function Write-TextNoBom ($path, [string]$content) {
+  [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Test-IsWindows {
+  if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsWindows }
+  return $true   # Windows PowerShell 5.1 only runs on Windows
+}
+function Test-IsMac {
+  if ($PSVersionTable.PSVersion.Major -ge 6) { return $IsMacOS }
+  return $false
+}
+
+# Docker -v needs forward slashes; user configs on Windows often have backslashes.
+function Normalize-HostPath ([string]$p) { return ($p -replace '\\','/') }
+
+function Test-CommandExists ([string]$name) {
+  return [bool](Get-Command $name -ErrorAction SilentlyContinue)
+}
+
+# --- Load catalog ------------------------------------------------------------
+$mani = Get-Json $Manifest
+$allKeys = @($mani.products.PSObject.Properties.Name)
+
+# --- Interactive wizard ------------------------------------------------------
+function Invoke-Wizard {
+  Write-Head "GroupDocs MCP setup wizard"
+  Write-Host "  Press Enter to accept the [default] shown for each question.`n"
+
+  $prodList = ($allKeys | Sort-Object) -join ', '
+  Write-Host "  Products: $prodList"
+  Write-Host "  ('all' = every individual product; 'total' alone = the all-in-one bundle)"
+  $pAns = Read-Host "  Which products? (comma-separated) [all]"
+  if ([string]::IsNullOrWhiteSpace($pAns)) { $pAns = 'all' }
+
+  $cAns = Read-Host "  Channel - docker (self-contained, recommended) or nuget (dnx, needs .NET 10 SDK) [docker]"
+  if ([string]::IsNullOrWhiteSpace($cAns)) { $cAns = 'docker' }
+
+  $rAns = 'ghcr'
+  if ($cAns.Trim().ToLower() -eq 'docker') {
+    $rAns = Read-Host "  Registry - ghcr or dockerhub [ghcr]"
+    if ([string]::IsNullOrWhiteSpace($rAns)) { $rAns = 'ghcr' }
+  }
+
+  Write-Host "  Clients: $($KNOWN_CLIENTS -join ', ')"
+  $clAns = Read-Host "  Which clients to register into? (comma-separated) [claude-desktop]"
+  if ([string]::IsNullOrWhiteSpace($clAns)) { $clAns = 'claude-desktop' }
+
+  $sAns = Read-Host "  Documents storage folder (inputs + outputs) [$((Get-Location).Path)]"
+  if ([string]::IsNullOrWhiteSpace($sAns)) { $sAns = (Get-Location).Path }
+
+  $oAns = Read-Host "  Separate output folder (Enter = same as storage)"
+  $lAns = Read-Host "  Path to GroupDocs license .lic file (Enter = evaluation mode)"
+
+  $vAns = Read-Host "  Version pin, e.g. 26.7.2 (Enter = latest)"
+  if ([string]::IsNullOrWhiteSpace($vAns)) { $vAns = 'latest' }
+
+  $doc = [ordered]@{
+    channel     = $cAns.Trim().ToLower()
+    registry    = $rAns.Trim().ToLower()
+    clients     = @($clAns -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+    version     = $vAns.Trim()
+    storagePath = $sAns.Trim()
+    outputPath  = "$oAns".Trim()
+    licensePath = "$lAns".Trim()
+    products    = @($pAns -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+  }
+  $json = ($doc | ConvertTo-Json -Depth 6)
+  Write-Host "`n  Saving config -> $Config"
+  Write-TextNoBom $Config $json
+  Write-Ok "config saved; re-run with -DryRun any time to preview"
+  return (Get-Json $Config)
+}
+
+# --- Load config (wizard if requested or missing) ----------------------------
+$cfg = $null
+if ($Interactive -or -not (Test-Path $Config)) {
+  if (-not (Test-Path $Config)) { Write-Warn2 "No config at $Config - starting the wizard." }
+  $cfg = Invoke-Wizard
+} else {
+  $cfg = Get-Json $Config
+}
+
+# CLI overrides win over config file. -Clients uses ContainsKey so an EXPLICIT
+# empty array (-Clients @(), the compose-only flow) overrides too - a bare
+# truthiness check treats @() as "not passed" and silently falls back to the
+# config's clients.
+if ($Channel)  { $cfg.channel     = $Channel }
+if ($Registry) { $cfg | Add-Member registry $Registry -Force }
+if ($Version)  { $cfg | Add-Member version  $Version  -Force }
+if ($Products) { $cfg | Add-Member products $Products -Force }
+if ($PSBoundParameters.ContainsKey('Clients')) { $cfg | Add-Member clients $Clients -Force }
+
+$channel     = if ($cfg.channel)     { "$($cfg.channel)".ToLower() } else { 'docker' }
+$registry    = if ($cfg.registry)    { "$($cfg.registry)".ToLower() } else { 'ghcr' }
+$version     = if ($cfg.version)      { "$($cfg.version)" }            else { 'latest' }
+$storagePath = if ($cfg.storagePath) { "$($cfg.storagePath)" }        else { (Get-Location).Path }
+$outputPath  = if ($cfg.outputPath)  { "$($cfg.outputPath)" }         else { '' }
+$licensePath = if ($cfg.licensePath) { "$($cfg.licensePath)" }        else { '' }
+$clients     = @($cfg.clients)
+$requested   = @($cfg.products)
+
+Write-Head "GroupDocs MCP installer"
+Write-Info "channel=$channel  registry=$registry  version=$version"
+if ($outputPath -ne '') { Write-Info "storage=$storagePath  output=$outputPath" }
+else                    { Write-Info "storage=$storagePath  output=(same as storage)" }
+if ($licensePath -ne '') { Write-Info "license=$licensePath" } else { Write-Info "license=(evaluation mode)" }
+
+# Fail early on obviously wrong shared paths (placeholder or missing license file).
+if ($licensePath -ne '' -and -not (Test-Path $licensePath)) {
+  Write-Warn2 "license file not found at '$licensePath' - servers will run in evaluation mode until it exists."
+}
+if (-not (Test-Path $storagePath)) {
+  if ($DryRun) { Write-Info "(dry-run) storage folder '$storagePath' does not exist - would create it" }
+  else { New-Item -ItemType Directory -Force -Path $storagePath | Out-Null; Write-Ok "created storage folder $storagePath" }
+}
+if ($outputPath -ne '' -and -not (Test-Path $outputPath)) {
+  if ($DryRun) { Write-Info "(dry-run) output folder '$outputPath' does not exist - would create it" }
+  else { New-Item -ItemType Directory -Force -Path $outputPath | Out-Null; Write-Ok "created output folder $outputPath" }
+}
+
+# --- Resolve product list --------------------------------------------------
+$resolved = New-Object System.Collections.Generic.List[string]
+foreach ($p in $requested) {
+  $k = "$p".ToLower().Trim()
+  if ($k -eq 'all') {
+    # "all" = every individual product; Total is the bundle equivalent, so skip it here.
+    foreach ($a in $allKeys) { if ($a -ne 'total' -and -not $resolved.Contains($a)) { $resolved.Add($a) } }
+  } elseif ($allKeys -contains $k) {
+    if (-not $resolved.Contains($k)) { $resolved.Add($k) }
+  } else {
+    Write-Warn2 "Unknown product '$p' - skipped. Known: $($allKeys -join ', ')"
+  }
+}
+if ($resolved.Count -eq 0) { throw "No valid products resolved from config. Nothing to do." }
+if ($resolved.Contains('total') -and $resolved.Count -gt 1) {
+  Write-Warn2 "'total' bundles every product; the individual servers you also listed are redundant (duplicate tools)."
+}
+
+# nuget channel can't serve the >250MB bundles
+if ($channel -eq 'nuget') {
+  foreach ($k in @($resolved)) {
+    if ($mani.products.$k.nugetBlocked) {
+      Write-Warn2 "'$k' is NuGet-blocked (>250MB, ONNX models) - use -Channel docker for it. Skipping on nuget."
+      [void]$resolved.Remove($k)
+    }
+  }
+}
+Write-Info "products: $($resolved -join ', ')"
+
+# --- Image / package refs ---------------------------------------------------
+function Get-ImageRef ($key) {
+  $tag = if ($version -eq 'latest' -or [string]::IsNullOrWhiteSpace($version)) { 'latest' } else { $version }
+  if ($registry -eq 'dockerhub') { return "groupdocs/$key-net-mcp:$tag" }
+  return "ghcr.io/groupdocs-$key/$key-net-mcp:$tag"
+}
+function Get-PackageRef ($key) {
+  $pkg = $mani.products.$key.nuget
+  if ($version -eq 'latest' -or [string]::IsNullOrWhiteSpace($version)) { return $pkg }
+  return "$pkg@$version"
+}
+
+# --- Build one MCP server entry -------------------------------------------
+function New-DockerEntry ($key) {
+  $image = Get-ImageRef $key
+  $sp = Normalize-HostPath $storagePath
+  $dargs = [System.Collections.Generic.List[string]]::new()
+  @('run','--rm','-i') | ForEach-Object { $dargs.Add($_) }
+  $dargs.Add('-v'); $dargs.Add("$sp`:/data")
+  $dargs.Add('-e'); $dargs.Add('GROUPDOCS_MCP_STORAGE_PATH=/data')
+  if ($outputPath -ne '') {
+    $op = Normalize-HostPath $outputPath
+    $dargs.Add('-v'); $dargs.Add("$op`:/data/output")
+    $dargs.Add('-e'); $dargs.Add('GROUPDOCS_MCP_OUTPUT_PATH=/data/output')
+  }
+  if ($licensePath -ne '') {
+    $licDir  = Normalize-HostPath (Split-Path -Parent $licensePath)
+    $licName = Split-Path -Leaf   $licensePath
+    $dargs.Add('-v'); $dargs.Add("$licDir`:/license:ro")
+    $dargs.Add('-e'); $dargs.Add("GROUPDOCS_LICENSE_PATH=/license/$licName")
+  }
+  $dargs.Add($image)
+  return [ordered]@{ command = 'docker'; args = @($dargs) }
+}
+
+function New-NugetEntry ($key) {
+  $ref = Get-PackageRef $key
+  $env = [ordered]@{ GROUPDOCS_MCP_STORAGE_PATH = $storagePath }
+  if ($outputPath  -ne '') { $env.GROUPDOCS_MCP_OUTPUT_PATH = $outputPath }
+  if ($licensePath -ne '') { $env.GROUPDOCS_LICENSE_PATH    = $licensePath }
+  return [ordered]@{ command = 'dnx'; args = @($ref, '--yes'); env = $env }
+}
+
+$entries = [ordered]@{}
+foreach ($k in $resolved) {
+  $name = $mani.products.$k.server
+  $entries[$name] = if ($channel -eq 'docker') { New-DockerEntry $k } else { New-NugetEntry $k }
+}
+
+# --- Client config targets -------------------------------------------------
+# File-based clients get a target (path + root key). CLI-based clients
+# (claude-code, codex) register through the client's own command instead -
+# that is their supported path and avoids guessing at internal file formats.
+function Get-ClientTarget ($client) {
+  switch ($client.ToLower()) {
+    'claude-desktop' {
+      $p = if (Test-IsWindows) { Join-Path $env:APPDATA 'Claude/claude_desktop_config.json' }
+           elseif (Test-IsMac) { Join-Path $HOME 'Library/Application Support/Claude/claude_desktop_config.json' }
+           else                { Join-Path $HOME '.config/Claude/claude_desktop_config.json' }
+      return @{ path = $p; root = 'mcpServers' }
+    }
+    'cursor'   { return @{ path = (Join-Path $HOME '.cursor/mcp.json'); root = 'mcpServers' } }
+    'windsurf' { return @{ path = (Join-Path $HOME '.codeium/windsurf/mcp_config.json'); root = 'mcpServers' } }
+    'cline' {
+      $base = if (Test-IsWindows) { Join-Path $env:APPDATA 'Code/User' }
+              elseif (Test-IsMac) { Join-Path $HOME 'Library/Application Support/Code/User' }
+              else                { Join-Path $HOME '.config/Code/User' }
+      return @{ path = (Join-Path $base 'globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json'); root = 'mcpServers' }
+    }
+    'vscode' {
+      # VS Code user-level MCP config (applies to every workspace).
+      $base = if (Test-IsWindows) { Join-Path $env:APPDATA 'Code/User' }
+              elseif (Test-IsMac) { Join-Path $HOME 'Library/Application Support/Code/User' }
+              else                { Join-Path $HOME '.config/Code/User' }
+      return @{ path = (Join-Path $base 'mcp.json'); root = 'servers' }
+    }
+    'vscode-workspace' { return @{ path = (Join-Path (Get-Location) '.vscode/mcp.json'); root = 'servers' } }
+    'vs2022'           { return @{ path = (Join-Path (Get-Location) '.mcp.json'); root = 'servers' } }
+    default   { throw "Unknown client '$client'. Use: $($KNOWN_CLIENTS -join ', ')." }
+  }
+}
+function Test-CliClient ($client) { return @('claude-code','codex') -contains $client.ToLower() }
+
+function Merge-IntoClient ($target, $entries) {
+  $path = $target.path; $root = $target.root
+  $dir  = Split-Path -Parent $path
+  if (-not (Test-Path $dir)) {
+    if ($DryRun) { Write-Info "(dry-run) would create $dir" } else { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+  }
+  $doc = if (Test-Path $path) { Get-Content -Raw -LiteralPath $path | ConvertFrom-Json } else { [pscustomobject]@{} }
+  if (-not ($doc.PSObject.Properties.Name -contains $root)) {
+    $doc | Add-Member -NotePropertyName $root -NotePropertyValue ([pscustomobject]@{}) -Force
+  }
+  foreach ($name in $entries.Keys) {
+    $doc.$root | Add-Member -NotePropertyName $name -NotePropertyValue $entries[$name] -Force
+  }
+  $json = $doc | ConvertTo-Json -Depth 12
+  if ($DryRun) {
+    Write-Info "(dry-run) would write $path :"
+    $json -split "`n" | ForEach-Object { Write-Host "      $_" }
+    return
+  }
+  if (Test-Path $path) {
+    $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
+    Copy-Item -LiteralPath $path -Destination "$path.$stamp.bak"
+    Write-Info "backed up existing -> $path.$stamp.bak"
+  }
+  Write-TextNoBom $path $json
+  Write-Ok "$path  ($($entries.Count) server(s))"
+}
+
+# --- CLI-based clients (claude-code, codex) ---------------------------------
+function Register-ViaCli ($client, $entries) {
+  $cli = if ($client -eq 'claude-code') { 'claude' } else { 'codex' }
+  if (-not (Test-CommandExists $cli)) {
+    Write-Warn2 "'$cli' CLI not found on PATH - skipping client '$client'. Install it, or use a file-based client."
+    return
+  }
+  foreach ($name in $entries.Keys) {
+    $e = $entries[$name]
+    $cliArgs = [System.Collections.Generic.List[string]]::new()
+    if ($client -eq 'claude-code') {
+      @('mcp','add','--scope','user') | ForEach-Object { $cliArgs.Add($_) }
+      if ($e.Contains('env')) { foreach ($kv in $e.env.GetEnumerator()) { $cliArgs.Add('-e'); $cliArgs.Add("$($kv.Key)=$($kv.Value)") } }
+      $cliArgs.Add($name)
+    } else {
+      @('mcp','add') | ForEach-Object { $cliArgs.Add($_) }
+      if ($e.Contains('env')) { foreach ($kv in $e.env.GetEnumerator()) { $cliArgs.Add('--env'); $cliArgs.Add("$($kv.Key)=$($kv.Value)") } }
+      $cliArgs.Add($name)
+    }
+    $cliArgs.Add('--'); $cliArgs.Add($e.command)
+    foreach ($a in $e.args) { $cliArgs.Add($a) }
+    if ($DryRun) { Write-Info "(dry-run) $cli $($cliArgs -join ' ')"; continue }
+    & $cli @cliArgs
+    if ($LASTEXITCODE -eq 0) { Write-Ok "$cli registered '$name'" }
+    else { Write-Warn2 "$cli exited $LASTEXITCODE registering '$name' - check the output above." }
+  }
+}
+function Unregister-ViaCli ($client, $names) {
+  $cli = if ($client -eq 'claude-code') { 'claude' } else { 'codex' }
+  if (-not (Test-CommandExists $cli)) { Write-Warn2 "'$cli' CLI not found - skipping '$client'."; return }
+  foreach ($n in $names) {
+    $rmArgs = if ($client -eq 'claude-code') { @('mcp','remove','--scope','user',$n) } else { @('mcp','remove',$n) }
+    if ($DryRun) { Write-Info "(dry-run) $cli $($rmArgs -join ' ')"; continue }
+    & $cli @rmArgs 2>$null
+    if ($LASTEXITCODE -eq 0) { Write-Ok "$cli removed '$n'" }
+  }
+}
+
+# --- Uninstall / clear -----------------------------------------------------
+function Remove-FromClient ($target, $names) {
+  $path = $target.path; $root = $target.root
+  if (-not (Test-Path $path)) { Write-Info "$path (not present - nothing to remove)"; return }
+  $doc = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+  if (-not ($doc.PSObject.Properties.Name -contains $root)) { Write-Info "$path (no '$root' block)"; return }
+  $removed = @()
+  foreach ($n in $names) {
+    if ($doc.$root.PSObject.Properties.Name -contains $n) {
+      $doc.$root.PSObject.Properties.Remove($n); $removed += $n
+    }
+  }
+  if ($removed.Count -eq 0) { Write-Info "$path (no GroupDocs servers found)"; return }
+  if ($DryRun) { Write-Info "(dry-run) would remove from $path : $($removed -join ', ')"; return }
+  $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
+  Copy-Item -LiteralPath $path -Destination "$path.$stamp.bak"
+  Write-TextNoBom $path ($doc | ConvertTo-Json -Depth 12)
+  Write-Ok "$path  (removed $($removed.Count): $($removed -join ', '); backup .$stamp.bak)"
+}
+
+if ($Uninstall) {
+  Write-Head "Uninstall / clear"
+  $allServers = @($allKeys | ForEach-Object { $mani.products.$_.server })   # every known GroupDocs server
+  foreach ($c in $clients) {
+    if (Test-CliClient $c) { Write-Info "client '$c' (via CLI)"; Unregister-ViaCli $c $allServers; continue }
+    $t = Get-ClientTarget $c
+    Write-Info "client '$c' -> $($t.path)"
+    Remove-FromClient $t $allServers
+  }
+  if ($RemoveCompose) {
+    $cf = Join-Path (Get-Location) 'docker-compose.yml'
+    if (Test-Path $cf) {
+      if ($DryRun) { Write-Info "(dry-run) would delete $cf" }
+      else { Remove-Item -LiteralPath $cf -Force; Write-Ok "deleted $cf" }
+    }
+  }
+  if ($RemoveImages) {
+    Write-Head "Removing Docker images"
+    foreach ($k in $allKeys) {
+      $img = Get-ImageRef $k
+      Write-Info "docker rmi $img"
+      if (-not $DryRun) { & docker rmi $img 2>$null | Out-Null }
+    }
+  }
+  Write-Head "Done (uninstall)"
+  Write-Info "Restart your AI client to drop the removed servers."
+  return
+}
+
+Write-Head "Registering into clients"
+foreach ($c in $clients) {
+  if (Test-CliClient $c) { Write-Info "client '$c' (via CLI)"; Register-ViaCli $c $entries; continue }
+  $t = Get-ClientTarget $c
+  Write-Info "client '$c' -> $($t.path)"
+  Merge-IntoClient $t $entries
+}
+
+# --- docker-compose.yml ----------------------------------------------------
+function Write-Compose {
+  $lines = [System.Collections.Generic.List[string]]::new()
+  $lines.Add('services:')
+  foreach ($k in $resolved) {
+    $name  = $mani.products.$k.server
+    $image = Get-ImageRef $k
+    $sp = Normalize-HostPath $storagePath
+    $lines.Add("  $name`:")
+    $lines.Add("    image: $image")
+    $lines.Add('    volumes:')
+    $lines.Add("      - `"$sp`:/data`"")
+    if ($outputPath  -ne '') { $lines.Add("      - `"$(Normalize-HostPath $outputPath)`:/data/output`"") }
+    if ($licensePath -ne '') { $lines.Add("      - `"$(Normalize-HostPath (Split-Path -Parent $licensePath))`:/license:ro`"") }
+    $lines.Add('    environment:')
+    $lines.Add('      GROUPDOCS_MCP_STORAGE_PATH: /data')
+    if ($outputPath  -ne '') { $lines.Add('      GROUPDOCS_MCP_OUTPUT_PATH: /data/output') }
+    if ($licensePath -ne '') { $lines.Add("      GROUPDOCS_LICENSE_PATH: /license/$(Split-Path -Leaf $licensePath)") }
+    $lines.Add('    stdin_open: true')
+    $lines.Add('    tty: true')
+    $lines.Add('    restart: unless-stopped')
+  }
+  $out = Join-Path (Get-Location) 'docker-compose.yml'
+  if ($DryRun) { Write-Info "(dry-run) would write $out"; return }
+  Write-TextNoBom $out (($lines -join "`n") + "`n")
+  Write-Ok "docker-compose.yml written -> $out"
+}
+
+if ($EmitCompose) {
+  if ($channel -ne 'docker') { Write-Warn2 "-EmitCompose ignored: compose requires channel=docker." }
+  else { Write-Head "docker-compose.yml"; Write-Compose }
+}
+
+# --- Prewarm ---------------------------------------------------------------
+# docker: pull each image. nuget: download + first-launch each package by
+# spawning the server with CLOSED stdin - a stdio MCP server reads EOF and
+# exits cleanly (exit 0), leaving the dnx cache warm. This matters: a COLD
+# dnx cache can make a client's first in-pipe launch of a large package fail
+# before the download completes (observed org-wide; worst on the 161 MB
+# Signature package).
+if ($Prewarm) {
+  Write-Head "Prewarming ($channel)"
+  foreach ($k in $resolved) {
+    if ($channel -eq 'docker') {
+      $image = Get-ImageRef $k
+      Write-Info "docker pull $image"
+      if (-not $DryRun) { & docker pull $image }
+    } else {
+      $ref = Get-PackageRef $k
+      Write-Info "dnx $ref --yes  (download + first launch, stdin closed)"
+      if ($DryRun) { continue }
+      # Full path is required: dnx.cmd's internal %~dp0dotnet.exe resolves against
+      # the wrong directory when the shim is started by bare name from Process.Start.
+      $dnxName = if (Test-IsWindows) { 'dnx.cmd' } else { 'dnx' }
+      $dnxCmd  = (Get-Command $dnxName -ErrorAction SilentlyContinue).Source
+      if (-not $dnxCmd) { Write-Warn2 "'$dnxName' not found on PATH - install the .NET 10 SDK. Skipping prewarm."; continue }
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      $psi.FileName  = $dnxCmd
+      $psi.Arguments = "$ref --yes"
+      $psi.RedirectStandardInput  = $true
+      $psi.RedirectStandardOutput = $true
+      $psi.RedirectStandardError  = $true
+      $psi.UseShellExecute = $false
+      try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $proc.StandardInput.Close()          # EOF -> server exits after startup
+        $null = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(300000)) { try { $proc.Kill() } catch {}; Write-Warn2 "'$k' prewarm timed out (5 min) - killed." }
+        elseif ($proc.ExitCode -eq 0) { Write-Ok "'$k' cache warm (clean first launch)" }
+        else {
+          $tail = (($errTask.Result -split "`n") | Select-Object -Last 3) -join ' | '
+          Write-Warn2 "'$k' prewarm exit $($proc.ExitCode): $tail"
+        }
+      } catch {
+        Write-Warn2 "'$k' prewarm failed to start '$dnxCmd': $($_.Exception.Message)"
+      }
+    }
+  }
+}
+
+Write-Head "Done"
+Write-Info "Restart your AI client to pick up the new servers."
+Write-Info "Next: ./verify-groupdocs-mcp.ps1  (MCP handshake per product; add -Level toolcall for a real document test)"

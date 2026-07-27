@@ -1,0 +1,17 @@
+{
+  "$comment": "Source-of-truth catalog for GroupDocs MCP products. Naming patterns (verified against each repo): nuget=GroupDocs.<Product>.Mcp | ghcr=ghcr.io/groupdocs-<slug>/<slug>-net-mcp | dockerhub=groupdocs/<slug>-net-mcp | registry=io.github.groupdocs-<slug>/groupdocs-<slug>-mcp | tool=groupdocs-<slug>-mcp. 'nugetBlocked' products exceed NuGet.org's 250 MB limit (embedded ONNX models) and ship Docker/GHCR-only. Update this file when a product is added or a blocked product returns to NuGet.",
+  "products": {
+    "annotation":  { "displayName": "GroupDocs.Annotation", "nuget": "GroupDocs.Annotation.Mcp",  "server": "groupdocs-annotation",  "nugetBlocked": false },
+    "comparison":  { "displayName": "GroupDocs.Comparison", "nuget": "GroupDocs.Comparison.Mcp",  "server": "groupdocs-comparison",  "nugetBlocked": false },
+    "conversion":  { "displayName": "GroupDocs.Conversion", "nuget": "GroupDocs.Conversion.Mcp",  "server": "groupdocs-conversion",  "nugetBlocked": false },
+    "markdown":    { "displayName": "GroupDocs.Markdown",   "nuget": "GroupDocs.Markdown.Mcp",    "server": "groupdocs-markdown",    "nugetBlocked": false },
+    "merger":      { "displayName": "GroupDocs.Merger",     "nuget": "GroupDocs.Merger.Mcp",      "server": "groupdocs-merger",      "nugetBlocked": false },
+    "metadata":    { "displayName": "GroupDocs.Metadata",   "nuget": "GroupDocs.Metadata.Mcp",    "server": "groupdocs-metadata",    "nugetBlocked": false },
+    "parser":      { "displayName": "GroupDocs.Parser",     "nuget": "GroupDocs.Parser.Mcp",      "server": "groupdocs-parser",      "nugetBlocked": true  },
+    "redaction":   { "displayName": "GroupDocs.Redaction",  "nuget": "GroupDocs.Redaction.Mcp",   "server": "groupdocs-redaction",   "nugetBlocked": false },
+    "signature":   { "displayName": "GroupDocs.Signature",  "nuget": "GroupDocs.Signature.Mcp",   "server": "groupdocs-signature",   "nugetBlocked": false },
+    "total":       { "displayName": "GroupDocs.Total",      "nuget": "GroupDocs.Total.Mcp",       "server": "groupdocs-total",       "nugetBlocked": true  },
+    "viewer":      { "displayName": "GroupDocs.Viewer",     "nuget": "GroupDocs.Viewer.Mcp",      "server": "groupdocs-viewer",      "nugetBlocked": false },
+    "watermark":   { "displayName": "GroupDocs.Watermark",  "nuget": "GroupDocs.Watermark.Mcp",   "server": "groupdocs-watermark",   "nugetBlocked": false }
+  }
+}
