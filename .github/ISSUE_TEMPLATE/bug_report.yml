@@ -1,0 +1,57 @@
+name: Bug report
+description: The installer, verifier, or uninstaller misbehaved
+labels: [bug]
+body:
+  - type: dropdown
+    id: script
+    attributes:
+      label: Which script?
+      options:
+        - install-groupdocs-mcp.ps1
+        - verify-groupdocs-mcp.ps1
+        - uninstall-groupdocs-mcp.ps1
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Exact command you ran
+      placeholder: "./install-groupdocs-mcp.ps1 -Channel docker -Products metadata -Clients claude-desktop"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS (Apple Silicon), macOS (Intel), Linux]
+    validations:
+      required: true
+  - type: input
+    id: psversion
+    attributes:
+      label: PowerShell version
+      description: Output of `$PSVersionTable.PSVersion`
+      placeholder: "5.1.26100.4202  /  7.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      options: [docker, nuget]
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Your groupdocs-mcp.config.json
+      description: Redact license paths if sensitive.
+      render: json
+  - type: textarea
+    id: output
+    attributes:
+      label: Full output
+      description: Ideally from a `-DryRun` run too — it shows what the script intended to do.
+      render: shell
+    validations:
+      required: true

@@ -1,0 +1,16 @@
+{
+  "channel": "nuget",
+  "registry": "ghcr",
+  "version": "latest",
+  "storagePath": "C:/GroupDocs/Documents",
+  "outputPath": "",
+  "licensePath": "",
+  "clients": [
+    "vscode-workspace",
+    "vs2022"
+  ],
+  "products": [
+    "metadata",
+    "conversion"
+  ]
+}

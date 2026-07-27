@@ -5,8 +5,8 @@ single config file — or a guided wizard. Registers them into your AI client(s)
 and/or emits a `docker-compose.yml`. Cross-platform (PowerShell 5.1 and 7+).
 
 ```powershell
-./install-groupdocs-mcp.ps1 -Interactive     # first run: wizard asks everything, saves the config
-./verify-groupdocs-mcp.ps1                   # then: MCP handshake smoke test per product
+./install-groupdocs-mcp.ps1 -Interactive     # first run: wizard asks everything (incl. post-install verification), saves the config
+./verify-groupdocs-mcp.ps1                   # any time later: re-verify every installed product
 ```
 
 ## Files
@@ -35,10 +35,9 @@ reuses the same values, so a working install verifies with no extra setup.
 ./install-groupdocs-mcp.ps1 -Interactive
 # 2. Preview without touching anything:
 ./install-groupdocs-mcp.ps1 -DryRun
-# 3. Apply (+ warm caches so the first agent call is instant):
-./install-groupdocs-mcp.ps1 -Prewarm
-# 4. Restart your AI client, then smoke-test:
-./verify-groupdocs-mcp.ps1
+# 3. Apply, warm caches, and verify the setup in one go:
+./install-groupdocs-mcp.ps1 -Verify
+# 4. Restart your AI client.
 ```
 
 ## Config file
@@ -101,46 +100,62 @@ publish matrix). NuGet is convenient for .NET devs and per-product subsets.
 | Switch | Effect |
 |---|---|
 | `-Interactive` | Guided wizard; saves answers to the config file. Also auto-runs when no config exists. |
+| `-Verify` | After installing: warm caches, then run the verifier against the same products/channel (auto level). Exit code = verification result. The wizard offers this as its last question. |
 | `-DryRun` | Print everything, write nothing. Always preview first. |
 | `-Prewarm` | docker: `docker pull` each image. nuget: download **and first-launch** each package with stdin closed (server reads EOF and exits cleanly) — prevents the cold-cache failure where a client's first in-pipe launch of a large package dies before the download finishes. |
 | `-EmitCompose` | Also write a `docker-compose.yml` in the current dir (docker channel). |
 | `-Config <path>` | Use a different config file. |
 
-## Uninstall / clear everything
+## Uninstall / remove
+
+`uninstall-groupdocs-mcp.ps1` is the configurable removal tool. Its defaults
+are deliberately the "clean this machine" case: **every known GroupDocs server,
+from every known client** — regardless of what the config file says, so it also
+catches entries left behind after the config changed.
 
 ```powershell
-./install-groupdocs-mcp.ps1 -Uninstall -DryRun            # preview
-./install-groupdocs-mcp.ps1 -Uninstall                    # remove every GroupDocs server from the configured clients
-./install-groupdocs-mcp.ps1 -Uninstall -RemoveCompose     # also delete ./docker-compose.yml
-./install-groupdocs-mcp.ps1 -Uninstall -RemoveImages      # also docker rmi the pulled images
+./uninstall-groupdocs-mcp.ps1 -DryRun                     # preview a full sweep
+./uninstall-groupdocs-mcp.ps1                             # remove ALL GroupDocs servers from ALL clients
+./uninstall-groupdocs-mcp.ps1 -Products metadata,conversion   # only these products
+./uninstall-groupdocs-mcp.ps1 -Clients claude-desktop,cursor  # only these clients
+./uninstall-groupdocs-mcp.ps1 -RemoveImages               # also docker rmi the images
+./uninstall-groupdocs-mcp.ps1 -PurgeNugetCache            # also delete the cached NuGet packages (dnx re-downloads)
+./uninstall-groupdocs-mcp.ps1 -RemoveCompose              # also delete ./docker-compose.yml
 ```
 
-Uninstall removes **all known GroupDocs servers** (from `manifest.json`) — not
-just the currently-configured subset — so it fully clears prior installs.
-Non-GroupDocs servers in the same config file are left untouched, and the file
-is backed up before every change. CLI clients are cleared via
-`claude mcp remove` / `codex mcp remove`.
+- `-Products` / `-Clients` accept `all` (the default) or comma-separated subsets.
+- Non-GroupDocs servers in the same config files are left untouched, and every
+  modified file gets a timestamped `.bak` backup first.
+- CLI clients are cleared via `claude mcp remove` / `codex mcp remove` (skipped
+  with a warning if the CLI is not on PATH).
+- `-RemoveImages` honours `-Registry` / `-Version` for the tag to delete.
+
+`./install-groupdocs-mcp.ps1 -Uninstall` still works — it forwards to the same
+script, scoped to the clients listed in your config file.
 
 ## Verify installed products
 
 ```powershell
-./install-groupdocs-mcp.ps1 -Prewarm             # warm caches first (recommended)
-./verify-groupdocs-mcp.ps1                       # handshake level (default)
-./verify-groupdocs-mcp.ps1 -Level toolcall       # also invoke one real tool per product
+./install-groupdocs-mcp.ps1 -Verify              # install + prewarm + verify in one command
+./verify-groupdocs-mcp.ps1                       # auto level (default) - zero config needed
+./verify-groupdocs-mcp.ps1 -Level handshake      # minimum: server starts + lists tools
+./verify-groupdocs-mcp.ps1 -Level toolcall       # strict: only explicit verify.cases
 ```
 
-| Level | What it proves | Needs a sample file? |
+| Level | What it proves | Needs setup? |
 |---|---|---|
-| `handshake` (default) | Server **starts** (image pulls/runs or `dnx` resolves) and returns its tool list via `initialize` → `tools/list`. Universal across all products + both channels. | No |
-| `toolcall` | Handshake **plus** one real `tools/call` per product from `verify.cases`, against `verify.sampleFile` under `storagePath`. Confirms the engine + license actually process a document. | Yes |
+| `auto` (default) | Handshake **plus**, when possible, a real document check: after `tools/list` the verifier picks the server's info tool (`get_document_info`, or `get_view_info` for Viewer) and calls it against **the first document found in `storagePath`** (or `verify.sampleFile` when set). No document / no info tool → degrades to handshake-only, still passing. | No — drop any document into your storage folder for the deeper check |
+| `handshake` | Server **starts** (image pulls/runs or `dnx` resolves) and returns its tool list via `initialize` → `tools/list`. Universal across all products + both channels. | No |
+| `toolcall` | Handshake **plus** exactly the `tools/call` defined per product in `verify.cases` against `verify.sampleFile`. Products without a case report `no-case`. | Yes |
 
-The test prompts are **config-driven** — edit `verify.cases` to adjust:
+Explicit `verify.cases` entries always win over the auto pick — use them to
+exercise a specific tool or argument shape:
 
 ```jsonc
 "verify": {
-  "level": "handshake",              // or "toolcall"
-  "sampleFile": "sample.docx",       // must live under storagePath
-  "cases": {
+  "level": "auto",                   // auto | handshake | toolcall
+  "sampleFile": "sample.docx",       // optional - otherwise first document in storagePath
+  "cases": {                         // optional per-product overrides
     "metadata":   { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
     "conversion": { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } }
   }
@@ -148,9 +163,7 @@ The test prompts are **config-driven** — edit `verify.cases` to adjust:
 ```
 
 Exit code is `0` when all products pass, `1` otherwise — so it drops straight
-into CI. `get_document_info` is the best cross-product smoke tool: it is
-lightweight (no output file) and exists on most engines; products without it
-fall back to handshake-only.
+into CI. Tool args use Mcp.Core's `FileInput` shape: `{ "file": { "filePath": "<name>" } }`.
 
 ## docker-compose alternative
 

@@ -1,0 +1,12 @@
+{
+  "channel": "docker",
+  "registry": "ghcr",
+  "version": "latest",
+  "storagePath": "C:/GroupDocs/Documents",
+  "outputPath": "",
+  "licensePath": "",
+  "clients": [],
+  "products": [
+    "all"
+  ]
+}

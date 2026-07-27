@@ -1,0 +1,32 @@
+# GroupDocs MCP Installer
+
+Cross-platform PowerShell installer, verifier, and uninstaller for the GroupDocs MCP server family (Annotation, Comparison, Conversion, Markdown, Merger, Metadata, Parser, Redaction, Signature, Total, Viewer, Watermark). Registers the servers into AI clients — Claude Desktop, Claude Code, VS Code / GitHub Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file or a guided wizard, then verifies each server over a real MCP JSON-RPC session.
+
+## Install
+
+- First run (wizard asks products, channel, clients, storage/output/license paths, then verifies): `./install-groupdocs-mcp.ps1 -Interactive`
+- Preview without changing anything: `./install-groupdocs-mcp.ps1 -DryRun`
+- Apply + warm caches + verify in one command: `./install-groupdocs-mcp.ps1 -Verify`
+- Channels: `docker` (self-contained images from ghcr.io/groupdocs-<product>/<product>-net-mcp, recommended) or `nuget` (`dnx GroupDocs.<Product>.Mcp --yes`, needs .NET 10 SDK). Parser and Total are docker-only (packed tool exceeds NuGet.org's 250 MB limit).
+
+## Verify
+
+- `./verify-groupdocs-mcp.ps1` — default `auto` level: spawns each server, performs the MCP handshake (initialize -> tools/list), then calls its info tool (get_document_info, or get_view_info for Viewer) against the first document found in the storage folder. Degrades to handshake-only when no document or info tool exists. Exit 0 = all pass.
+- Levels: auto (default) | handshake | toolcall (explicit per-product cases from config).
+
+## Remove
+
+- `./uninstall-groupdocs-mcp.ps1` — defaults remove EVERY GroupDocs server from EVERY known client; scope with -Products / -Clients; deeper cleanup with -RemoveImages, -PurgeNugetCache, -RemoveCompose. Always supports -DryRun.
+
+## Configuration
+
+- `groupdocs-mcp.config.json`: channel, registry (ghcr|dockerhub), clients, version pin, storagePath, outputPath, licensePath (empty = evaluation mode), products, optional verify overrides.
+- Shared paths apply to every product: docker mounts storagePath -> /data (license dir -> /license:ro); nuget passes GROUPDOCS_MCP_STORAGE_PATH / GROUPDOCS_MCP_OUTPUT_PATH / GROUPDOCS_LICENSE_PATH env vars.
+- `manifest.json` is the product catalog (NuGet id, image slug, server name, nugetBlocked flag).
+
+## Key links
+
+- Repository: https://github.com/groupdocs/GroupDocs.Mcp.Installer
+- Product MCP servers (per-product repos): https://github.com/groupdocs-<product>/GroupDocs.<Product>.Mcp (e.g. groupdocs-conversion/GroupDocs.Conversion.Mcp)
+- MCP Registry entries: https://registry.modelcontextprotocol.io/v0/servers?search=groupdocs
+- License: MIT (the installer); the underlying GroupDocs engines require a license for production use — https://purchase.groupdocs.com/temporary-license/

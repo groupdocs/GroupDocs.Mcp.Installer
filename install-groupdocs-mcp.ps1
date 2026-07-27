@@ -40,6 +40,7 @@ param(
   [string[]] $Clients,
   [string]   $Version,
   [switch]   $Interactive,
+  [switch]   $Verify,
   [switch]   $Prewarm,
   [switch]   $EmitCompose,
   [switch]   $Uninstall,
@@ -120,6 +121,9 @@ function Invoke-Wizard {
 
   $vAns = Read-Host "  Version pin, e.g. 26.7.2 (Enter = latest)"
   if ([string]::IsNullOrWhiteSpace($vAns)) { $vAns = 'latest' }
+
+  $verAns = Read-Host "  Run post-install verification when done? (spawns each server, checks its tools, and - if a document exists in the storage folder - runs get_document_info on it) [Y/n]"
+  if ("$verAns".Trim().ToLower() -notin @('n','no')) { $script:WizardWantsVerify = $true }
 
   $doc = [ordered]@{
     channel     = $cAns.Trim().ToLower()
@@ -210,6 +214,9 @@ if ($channel -eq 'nuget') {
       Write-Warn2 "'$k' is NuGet-blocked (>250MB, ONNX models) - use -Channel docker for it. Skipping on nuget."
       [void]$resolved.Remove($k)
     }
+  }
+  if ($resolved.Count -eq 0) {
+    throw "All requested products are NuGet-blocked - nothing left to install on the nuget channel. Re-run with -Channel docker."
   }
 }
 Write-Info "products: $($resolved -join ', ')"
@@ -328,9 +335,13 @@ function Merge-IntoClient ($target, $entries) {
 # --- CLI-based clients (claude-code, codex) ---------------------------------
 function Register-ViaCli ($client, $entries) {
   $cli = if ($client -eq 'claude-code') { 'claude' } else { 'codex' }
-  if (-not (Test-CommandExists $cli)) {
-    Write-Warn2 "'$cli' CLI not found on PATH - skipping client '$client'. Install it, or use a file-based client."
-    return
+  $cliPresent = Test-CommandExists $cli
+  if (-not $cliPresent) {
+    if (-not $DryRun) {
+      Write-Warn2 "'$cli' CLI not found on PATH - skipping client '$client'. Install it, or run the command below in a shell where '$cli' works."
+    } else {
+      Write-Warn2 "'$cli' CLI not found on PATH here - showing the command it would run:"
+    }
   }
   foreach ($name in $entries.Keys) {
     $e = $entries[$name]
@@ -346,69 +357,26 @@ function Register-ViaCli ($client, $entries) {
     }
     $cliArgs.Add('--'); $cliArgs.Add($e.command)
     foreach ($a in $e.args) { $cliArgs.Add($a) }
-    if ($DryRun) { Write-Info "(dry-run) $cli $($cliArgs -join ' ')"; continue }
+    # Always SHOW the exact command (dry-run, or CLI missing) so users can copy it
+    # into a shell where the client CLI is available.
+    if ($DryRun -or -not $cliPresent) { Write-Info "$cli $($cliArgs -join ' ')"; continue }
     & $cli @cliArgs
     if ($LASTEXITCODE -eq 0) { Write-Ok "$cli registered '$name'" }
     else { Write-Warn2 "$cli exited $LASTEXITCODE registering '$name' - check the output above." }
   }
 }
-function Unregister-ViaCli ($client, $names) {
-  $cli = if ($client -eq 'claude-code') { 'claude' } else { 'codex' }
-  if (-not (Test-CommandExists $cli)) { Write-Warn2 "'$cli' CLI not found - skipping '$client'."; return }
-  foreach ($n in $names) {
-    $rmArgs = if ($client -eq 'claude-code') { @('mcp','remove','--scope','user',$n) } else { @('mcp','remove',$n) }
-    if ($DryRun) { Write-Info "(dry-run) $cli $($rmArgs -join ' ')"; continue }
-    & $cli @rmArgs 2>$null
-    if ($LASTEXITCODE -eq 0) { Write-Ok "$cli removed '$n'" }
-  }
-}
-
-# --- Uninstall / clear -----------------------------------------------------
-function Remove-FromClient ($target, $names) {
-  $path = $target.path; $root = $target.root
-  if (-not (Test-Path $path)) { Write-Info "$path (not present - nothing to remove)"; return }
-  $doc = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
-  if (-not ($doc.PSObject.Properties.Name -contains $root)) { Write-Info "$path (no '$root' block)"; return }
-  $removed = @()
-  foreach ($n in $names) {
-    if ($doc.$root.PSObject.Properties.Name -contains $n) {
-      $doc.$root.PSObject.Properties.Remove($n); $removed += $n
-    }
-  }
-  if ($removed.Count -eq 0) { Write-Info "$path (no GroupDocs servers found)"; return }
-  if ($DryRun) { Write-Info "(dry-run) would remove from $path : $($removed -join ', ')"; return }
-  $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
-  Copy-Item -LiteralPath $path -Destination "$path.$stamp.bak"
-  Write-TextNoBom $path ($doc | ConvertTo-Json -Depth 12)
-  Write-Ok "$path  (removed $($removed.Count): $($removed -join ', '); backup .$stamp.bak)"
-}
 
 if ($Uninstall) {
-  Write-Head "Uninstall / clear"
-  $allServers = @($allKeys | ForEach-Object { $mani.products.$_.server })   # every known GroupDocs server
-  foreach ($c in $clients) {
-    if (Test-CliClient $c) { Write-Info "client '$c' (via CLI)"; Unregister-ViaCli $c $allServers; continue }
-    $t = Get-ClientTarget $c
-    Write-Info "client '$c' -> $($t.path)"
-    Remove-FromClient $t $allServers
-  }
-  if ($RemoveCompose) {
-    $cf = Join-Path (Get-Location) 'docker-compose.yml'
-    if (Test-Path $cf) {
-      if ($DryRun) { Write-Info "(dry-run) would delete $cf" }
-      else { Remove-Item -LiteralPath $cf -Force; Write-Ok "deleted $cf" }
-    }
-  }
-  if ($RemoveImages) {
-    Write-Head "Removing Docker images"
-    foreach ($k in $allKeys) {
-      $img = Get-ImageRef $k
-      Write-Info "docker rmi $img"
-      if (-not $DryRun) { & docker rmi $img 2>$null | Out-Null }
-    }
-  }
-  Write-Head "Done (uninstall)"
-  Write-Info "Restart your AI client to drop the removed servers."
+  # Delegate to the dedicated removal script (single implementation). Scope note:
+  # the installer's -Uninstall clears the clients listed in the CONFIG; run
+  # uninstall-groupdocs-mcp.ps1 directly (defaults: all products, ALL clients)
+  # to sweep entries left behind after the config changed.
+  $un = Join-Path $PSScriptRoot 'uninstall-groupdocs-mcp.ps1'
+  $unArgs = @{ Manifest = $Manifest; Products = @('all'); Clients = @($clients); Registry = $registry; Version = $version }
+  if ($RemoveImages)  { $unArgs.RemoveImages  = $true }
+  if ($RemoveCompose) { $unArgs.RemoveCompose = $true }
+  if ($DryRun)        { $unArgs.DryRun        = $true }
+  & $un @unArgs
   return
 }
 
@@ -503,4 +471,47 @@ if ($Prewarm) {
 
 Write-Head "Done"
 Write-Info "Restart your AI client to pick up the new servers."
-Write-Info "Next: ./verify-groupdocs-mcp.ps1  (MCP handshake per product; add -Level toolcall for a real document test)"
+
+# --- Post-install verification (-Verify, or chosen in the wizard) -----------
+# Chains to verify-groupdocs-mcp.ps1 with the SAME effective settings. Caches
+# are warmed first (docker pull / dnx first-launch) so pulls don't eat the
+# verifier's per-server timeout. 'auto' level: handshake + get_document_info
+# against the first document found in the storage folder, when one exists.
+if (($Verify -or $script:WizardWantsVerify) -and -not $DryRun) {
+  if (-not $Prewarm) {
+    Write-Head "Prewarming before verification"
+    foreach ($k in $resolved) {
+      if ($channel -eq 'docker') {
+        $image = Get-ImageRef $k
+        Write-Info "docker pull $image"
+        & docker pull $image | Out-Null
+      }
+      # nuget: the -Prewarm block above is the thorough warm; for verification the
+      # verifier's own launch downloads on demand within its timeout - acceptable
+      # when the package is already cached, which -Prewarm guarantees. Warm here too:
+      else {
+        $ref = Get-PackageRef $k
+        $dnxName2 = if (Test-IsWindows) { 'dnx.cmd' } else { 'dnx' }
+        $dnxCmd2  = (Get-Command $dnxName2 -ErrorAction SilentlyContinue).Source
+        if ($dnxCmd2) {
+          Write-Info "dnx $ref --yes (cache warm)"
+          $psi2 = New-Object System.Diagnostics.ProcessStartInfo
+          $psi2.FileName = $dnxCmd2; $psi2.Arguments = "$ref --yes"
+          $psi2.RedirectStandardInput = $true; $psi2.RedirectStandardOutput = $true; $psi2.RedirectStandardError = $true
+          $psi2.UseShellExecute = $false
+          try {
+            $p2 = [System.Diagnostics.Process]::Start($psi2)
+            $p2.StandardInput.Close()
+            $null = $p2.StandardOutput.ReadToEndAsync(); $null = $p2.StandardError.ReadToEndAsync()
+            if (-not $p2.WaitForExit(300000)) { try { $p2.Kill() } catch {} }
+          } catch {}
+        }
+      }
+    }
+  }
+  Write-Head "Post-install verification"
+  $vs = Join-Path $PSScriptRoot 'verify-groupdocs-mcp.ps1'
+  & $vs -Config $Config -Manifest $Manifest -Channel $channel -Registry $registry -Version $version -Products @($resolved) -TimeoutSec 180
+  exit $LASTEXITCODE
+}
+Write-Info "Next: ./verify-groupdocs-mcp.ps1  (auto level: handshake + get_document_info on the first document in your storage folder)"

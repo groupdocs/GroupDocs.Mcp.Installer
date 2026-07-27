@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report (private)
+    url: https://github.com/groupdocs/GroupDocs.Mcp.Installer/security/advisories/new
+    about: Please report vulnerabilities privately — not as public issues. See SECURITY.md.
+  - name: Bugs in a specific MCP server (not the installer)
+    url: https://github.com/orgs/groupdocs/repositories
+    about: Server/tool behaviour issues belong in that product's GroupDocs.<Product>.Mcp repository.
+  - name: GroupDocs support forum
+    url: https://forum.groupdocs.com/
+    about: Engine capabilities, licensing, and purchases.

@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly e2e — catches regressions introduced by published packages,
+    # nuget.org, dnx, or runtime changes (the scripts run against LIVE artifacts).
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyze scripts
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          # PSUseApprovedVerbs is a style nit on internal helpers (documented in AGENTS.md).
+          $r = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning -ExcludeRule PSUseApprovedVerbs
+          $r | Format-Table -AutoSize | Out-String | Write-Host
+          if ($r | Where-Object Severity -eq 'Error') { exit 1 }
+
+  dry-run:
+    name: Dry-run · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse all scripts
+        shell: pwsh
+        run: |
+          $bad = $false
+          Get-ChildItem *.ps1 | ForEach-Object {
+            $t = $null; $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$t, [ref]$errs) | Out-Null
+            if ($errs.Count) { Write-Host "::error::$($_.Name): $($errs[0].Message)"; $bad = $true }
+            else { Write-Host "parse OK: $($_.Name)" }
+          }
+          if ($bad) { exit 1 }
+
+      - name: Scripts are ASCII-only (PS 5.1 encoding trap)
+        shell: pwsh
+        run: |
+          $bad = $false
+          Get-ChildItem *.ps1 | ForEach-Object {
+            $bytes = [IO.File]::ReadAllBytes($_.FullName)
+            $nonAscii = @($bytes | Where-Object { $_ -gt 127 })
+            if ($nonAscii.Count) { Write-Host "::error::$($_.Name) contains $($nonAscii.Count) non-ASCII byte(s)"; $bad = $true }
+          }
+          if ($bad) { exit 1 } else { Write-Host "all scripts ASCII-clean" }
+
+      - name: Installer dry-runs (docker + nuget channels)
+        shell: pwsh
+        run: |
+          ./install-groupdocs-mcp.ps1 -DryRun
+          ./install-groupdocs-mcp.ps1 -Channel nuget -Products metadata,conversion -Clients vscode-workspace -DryRun
+          ./install-groupdocs-mcp.ps1 -EmitCompose -Clients @() -DryRun
+
+      - name: Uninstaller dry-run (full sweep)
+        shell: pwsh
+        run: ./uninstall-groupdocs-mcp.ps1 -DryRun
+
+      - name: NuGet-blocked refusal is enforced
+        shell: pwsh
+        run: |
+          try {
+            ./install-groupdocs-mcp.ps1 -Channel nuget -Products parser,total -Clients vscode-workspace -DryRun
+            Write-Host "::error::expected the installer to throw for all-NuGet-blocked products"
+            exit 1
+          } catch { Write-Host "refused as expected: $($_.Exception.Message)" }
+
+  e2e:
+    name: E2E verify · published package (nuget)
+    runs-on: ubuntu-latest
+    # Real proof against the live artifact: dnx-launch a published server and
+    # complete the MCP handshake + a document toolcall via the auto level.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Verify metadata end-to-end
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force sample-storage | Out-Null
+          Set-Content sample-storage/sample.txt 'GroupDocs MCP installer CI sample document.'
+          $cfg = [ordered]@{
+            channel = 'nuget'; clients = @(); products = @('metadata')
+            storagePath = (Join-Path (Get-Location) 'sample-storage')
+          } | ConvertTo-Json
+          [IO.File]::WriteAllText("$PWD/ci.config.json", $cfg)
+          ./verify-groupdocs-mcp.ps1 -Config ./ci.config.json -TimeoutSec 240

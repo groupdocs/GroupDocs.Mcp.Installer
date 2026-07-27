@@ -17,12 +17,14 @@
   ],
 
   "verify": {
-    "level": "handshake",
+    "level": "auto",
     "sampleFile": "sample.docx",
     "cases": {
       "metadata":   { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
       "conversion": { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
-      "signature":  { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } }
+      "signature":  { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
+      "parser":     { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } },
+      "total":      { "tool": "get_document_info", "args": { "file": { "filePath": "sample.docx" } } }
     }
   }
 }
