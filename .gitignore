@@ -1,4 +1,9 @@
 # local artifacts the scripts may produce in-place
 docker-compose.yml
 .mcp.json
+.vscode/mcp.json
 *.bak
+
+# CI / local verification scratch
+ci.config.json
+sample-storage/
