@@ -4,29 +4,37 @@ Cross-platform PowerShell installer, verifier, and uninstaller for the GroupDocs
 
 ## Install
 
-- First run (wizard asks products, channel, clients, storage/output/license paths, then verifies): `./install-groupdocs-mcp.ps1 -Interactive`
+- First run (wizard asks platform, products, channel, clients, storage/output/license paths, metered, then verifies): `./install-groupdocs-mcp.ps1 -Interactive`
 - Preview without changing anything: `./install-groupdocs-mcp.ps1 -DryRun`
 - Apply + warm caches + verify in one command: `./install-groupdocs-mcp.ps1 -Verify`
-- Channels: `docker` (self-contained images from ghcr.io/groupdocs-<product>/<product>-net-mcp, recommended) or `nuget` (`dnx GroupDocs.<Product>.Mcp --yes`, needs .NET 10 SDK). Parser and Total are docker-only (packed tool exceeds NuGet.org's 250 MB limit).
+- Platform: `-Platform net` (.NET, the default and the only one available today; java, python, node are planned and refused until they ship).
+- Channels for net: `docker` (self-contained images from ghcr.io/groupdocs-<product>/<product>-net-mcp, recommended) or `nuget` (`dnx GroupDocs.<Product>.Mcp --yes`, needs .NET 10 SDK). Parser and Total are docker-only (packed tool exceeds NuGet.org's 250 MB limit).
+- Versions: `latest` by default; a pin such as `-Version 26.9.0` is checked per product against the MCP Registry before anything is written, and a product never published at that version is skipped with the reason.
+
+## Licensing
+
+- License file: `licensePath` (docker mounts it read-only; nuget passes GROUPDOCS_LICENSE_PATH).
+- Metered (pay-per-use): `"metered": true` or `-Metered`, with GROUPDOCS_METERED_PUBLIC_KEY and GROUPDOCS_METERED_PRIVATE_KEY set in the environment. The installer never writes the keys: docker forwards them by name, nuget servers inherit them from the client. Metered wins over a license file when both are set.
 
 ## Verify
 
-- `./verify-groupdocs-mcp.ps1` — default `auto` level: spawns each server, performs the MCP handshake (initialize -> tools/list), then calls its info tool (get_document_info, or get_view_info for Viewer) against the first document found in the storage folder. Degrades to handshake-only when no document or info tool exists. Exit 0 = all pass.
+- `./verify-groupdocs-mcp.ps1` — default `auto` level: spawns each server, performs the MCP handshake (initialize -> tools/list), calls get_license_status (reports version and license mode: evaluation / licensed / metered), then calls its info tool (get_document_info, or get_view_info for Viewer) against the first document found in the storage folder. Degrades gracefully when no document or info tool exists. Exit 0 = all pass, 1 = any failure, 2 = nothing verified.
+- With metered expected (`-Metered`), a server that did not engage metered licensing fails with the server's own reason (for example, keys rejected).
 - Levels: auto (default) | handshake | toolcall (explicit per-product cases from config).
 
 ## Remove
 
-- `./uninstall-groupdocs-mcp.ps1` — defaults remove EVERY GroupDocs server from EVERY known client; scope with -Products / -Clients; deeper cleanup with -RemoveImages, -PurgeNugetCache, -RemoveCompose. Always supports -DryRun.
+- `./uninstall-groupdocs-mcp.ps1` — defaults remove EVERY GroupDocs server from EVERY known client on every available platform; scope with -Products / -Clients / -Platform; deeper cleanup with -RemoveImages, -PurgeNugetCache, -RemoveCompose. Always supports -DryRun.
 
 ## Configuration
 
-- `groupdocs-mcp.config.json`: channel, registry (ghcr|dockerhub), clients, version pin, storagePath, outputPath, licensePath (empty = evaluation mode), products, optional verify overrides.
+- `groupdocs-mcp.config.json`: platform, channel, registry (ghcr|dockerhub), clients, version pin, storagePath, outputPath, licensePath (empty = evaluation mode), metered (true|false — never the keys), products, optional verify overrides.
 - Shared paths apply to every product: docker mounts storagePath -> /data (license dir -> /license:ro); nuget passes GROUPDOCS_MCP_STORAGE_PATH / GROUPDOCS_MCP_OUTPUT_PATH / GROUPDOCS_LICENSE_PATH env vars.
-- `manifest.json` is the product catalog (NuGet id, image slug, server name, nugetBlocked flag).
+- `manifest.json` is the catalog, per platform: channels, naming patterns (image, package, MCP Registry name), package runner, and which products each platform ships.
 
 ## Key links
 
 - Repository: https://github.com/groupdocs/GroupDocs.Mcp.Installer
 - Product MCP servers (per-product repos): https://github.com/groupdocs-<product>/GroupDocs.<Product>.Mcp (e.g. groupdocs-conversion/GroupDocs.Conversion.Mcp)
 - MCP Registry entries: https://registry.modelcontextprotocol.io/v0/servers?search=groupdocs
-- License: MIT (the installer); the underlying GroupDocs engines require a license for production use — https://purchase.groupdocs.com/temporary-license/
+- License: MIT (the installer); the underlying GroupDocs engines require a license for production use — https://purchase.groupdocs.com/temporary-license/ — or metered keys: https://purchase.groupdocs.com/faqs/licensing/metered/
