@@ -1,0 +1,19 @@
+{
+  "platform": "net",
+  "channel": "docker",
+  "registry": "ghcr",
+  "version": "26.9.0",
+  "storagePath": "C:/GroupDocs/Documents",
+  "outputPath": "",
+  "licensePath": "",
+  "metered": true,
+  "clients": [
+    "claude-desktop",
+    "claude-code"
+  ],
+  "products": [
+    "conversion",
+    "comparison",
+    "signature"
+  ]
+}
