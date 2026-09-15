@@ -12,8 +12,11 @@ Thanks for improving the GroupDocs MCP installer.
    clients (`vs2022`, `vscode-workspace`) inside a scratch directory.
 4. The client-target map lives in **both** `install-` and `uninstall-` scripts —
    change them together.
-5. `manifest.json` is the single source of truth for products — new products are a
-   manifest entry, not code.
+5. `manifest.json` is the single source of truth for products **and platforms** — a new
+   product or a newly shipping platform is a manifest entry, not code. Never hardcode an
+   image name, package id, runner command, or channel list in a script.
+6. **Metered keys are never written or printed** — not to configs, compose files, prompts,
+   or logs. Report presence only (`set (N chars)`).
 
 ## Test before you PR
 
@@ -21,8 +24,11 @@ Thanks for improving the GroupDocs MCP installer.
 ./install-groupdocs-mcp.ps1 -DryRun                     # docker channel preview
 ./install-groupdocs-mcp.ps1 -Channel nuget -DryRun      # nuget channel preview
 ./uninstall-groupdocs-mcp.ps1 -DryRun                   # removal preview
-# real end-to-end against a published package (downloads once, then cached):
+./install-groupdocs-mcp.ps1 -Platform java -DryRun      # must refuse: planned platform
+# real end-to-end against a published package (downloads once, then cached);
+# put a .pdf or .docx in the storage folder for the document check:
 ./verify-groupdocs-mcp.ps1 -Products metadata -Channel nuget -TimeoutSec 180
+./verify-groupdocs-mcp.ps1 -Products metadata -Channel nuget -Metered   # with metered keys in your env
 ```
 
 ## Pull request expectations
