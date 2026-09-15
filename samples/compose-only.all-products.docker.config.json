@@ -1,10 +1,12 @@
 {
+  "platform": "net",
   "channel": "docker",
   "registry": "ghcr",
   "version": "latest",
   "storagePath": "C:/GroupDocs/Documents",
   "outputPath": "",
   "licensePath": "",
+  "metered": false,
   "clients": [],
   "products": [
     "all"
