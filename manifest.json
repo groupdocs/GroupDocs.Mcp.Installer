@@ -1,17 +1,62 @@
 {
-  "$comment": "Source-of-truth catalog for GroupDocs MCP products. Naming patterns (verified against each repo): nuget=GroupDocs.<Product>.Mcp | ghcr=ghcr.io/groupdocs-<slug>/<slug>-net-mcp | dockerhub=groupdocs/<slug>-net-mcp | registry=io.github.groupdocs-<slug>/groupdocs-<slug>-mcp | tool=groupdocs-<slug>-mcp. 'nugetBlocked' products exceed NuGet.org's 250 MB limit (embedded ONNX models) and ship Docker/GHCR-only. Update this file when a product is added or a blocked product returns to NuGet.",
+  "$comment": "Source-of-truth catalog for GroupDocs MCP products, per platform. A platform is the runtime hosting the server (.NET today; Java, Python, Node.js planned). Naming patterns expand <slug> (product key) and <Product> (displayName without 'GroupDocs.'); a product can override any name under overrides.<platform>. mcpRegistry lists candidate registry names, most preferred first: decision D1 moves .NET entries to '...-mcp-net', and until they exist the current unsuffixed name still answers. Planned platforms carry no naming on purpose - their image/package/registry names are permanent once published and must be decided before the first push. Legacy product fields (nuget, server, nugetBlocked) are kept for downstream automation and must agree with the net patterns; CI checks this.",
+  "schemaVersion": 2,
+  "defaultPlatform": "net",
+  "platforms": {
+    "net": {
+      "displayName": ".NET",
+      "status": "available",
+      "channels": ["docker", "nuget"],
+      "defaultChannel": "docker",
+      "naming": {
+        "server": "groupdocs-<slug>",
+        "ghcr": "ghcr.io/groupdocs-<slug>/<slug>-net-mcp",
+        "dockerhub": "groupdocs/<slug>-net-mcp",
+        "package": "GroupDocs.<Product>.Mcp",
+        "mcpRegistry": [
+          "io.github.groupdocs-<slug>/groupdocs-<slug>-mcp-net",
+          "io.github.groupdocs-<slug>/groupdocs-<slug>-mcp"
+        ]
+      },
+      "packageRunner": {
+        "channel": "nuget",
+        "command": "dnx",
+        "windowsCommand": "dnx.cmd",
+        "args": ["{ref}", "--yes"],
+        "ref": "{package}@{version}",
+        "refLatest": "{package}",
+        "prerequisite": ".NET 10 SDK",
+        "sizeLimitNote": "NuGet.org caps packages at 250 MB"
+      }
+    },
+    "java": {
+      "displayName": "Java",
+      "status": "planned",
+      "note": "Not started. Image naming will follow <slug>-java-mcp and registry naming ...-mcp-java (decisions D1/D2)."
+    },
+    "python": {
+      "displayName": "Python",
+      "status": "planned",
+      "note": "Not started. Image naming will follow <slug>-python-mcp and registry naming ...-mcp-python (decisions D1/D2)."
+    },
+    "node": {
+      "displayName": "Node.js",
+      "status": "planned",
+      "note": "Not started. Image naming will follow <slug>-node-mcp and registry naming ...-mcp-node (decisions D1/D2)."
+    }
+  },
   "products": {
-    "annotation":  { "displayName": "GroupDocs.Annotation", "nuget": "GroupDocs.Annotation.Mcp",  "server": "groupdocs-annotation",  "nugetBlocked": false },
-    "comparison":  { "displayName": "GroupDocs.Comparison", "nuget": "GroupDocs.Comparison.Mcp",  "server": "groupdocs-comparison",  "nugetBlocked": false },
-    "conversion":  { "displayName": "GroupDocs.Conversion", "nuget": "GroupDocs.Conversion.Mcp",  "server": "groupdocs-conversion",  "nugetBlocked": false },
-    "markdown":    { "displayName": "GroupDocs.Markdown",   "nuget": "GroupDocs.Markdown.Mcp",    "server": "groupdocs-markdown",    "nugetBlocked": false },
-    "merger":      { "displayName": "GroupDocs.Merger",     "nuget": "GroupDocs.Merger.Mcp",      "server": "groupdocs-merger",      "nugetBlocked": false },
-    "metadata":    { "displayName": "GroupDocs.Metadata",   "nuget": "GroupDocs.Metadata.Mcp",    "server": "groupdocs-metadata",    "nugetBlocked": false },
-    "parser":      { "displayName": "GroupDocs.Parser",     "nuget": "GroupDocs.Parser.Mcp",      "server": "groupdocs-parser",      "nugetBlocked": true  },
-    "redaction":   { "displayName": "GroupDocs.Redaction",  "nuget": "GroupDocs.Redaction.Mcp",   "server": "groupdocs-redaction",   "nugetBlocked": false },
-    "signature":   { "displayName": "GroupDocs.Signature",  "nuget": "GroupDocs.Signature.Mcp",   "server": "groupdocs-signature",   "nugetBlocked": false },
-    "total":       { "displayName": "GroupDocs.Total",      "nuget": "GroupDocs.Total.Mcp",       "server": "groupdocs-total",       "nugetBlocked": true  },
-    "viewer":      { "displayName": "GroupDocs.Viewer",     "nuget": "GroupDocs.Viewer.Mcp",      "server": "groupdocs-viewer",      "nugetBlocked": false },
-    "watermark":   { "displayName": "GroupDocs.Watermark",  "nuget": "GroupDocs.Watermark.Mcp",   "server": "groupdocs-watermark",   "nugetBlocked": false }
+    "annotation":  { "displayName": "GroupDocs.Annotation", "nuget": "GroupDocs.Annotation.Mcp",  "server": "groupdocs-annotation",  "nugetBlocked": false, "platforms": ["net"] },
+    "comparison":  { "displayName": "GroupDocs.Comparison", "nuget": "GroupDocs.Comparison.Mcp",  "server": "groupdocs-comparison",  "nugetBlocked": false, "platforms": ["net"] },
+    "conversion":  { "displayName": "GroupDocs.Conversion", "nuget": "GroupDocs.Conversion.Mcp",  "server": "groupdocs-conversion",  "nugetBlocked": false, "platforms": ["net"] },
+    "markdown":    { "displayName": "GroupDocs.Markdown",   "nuget": "GroupDocs.Markdown.Mcp",    "server": "groupdocs-markdown",    "nugetBlocked": false, "platforms": ["net"] },
+    "merger":      { "displayName": "GroupDocs.Merger",     "nuget": "GroupDocs.Merger.Mcp",      "server": "groupdocs-merger",      "nugetBlocked": false, "platforms": ["net"] },
+    "metadata":    { "displayName": "GroupDocs.Metadata",   "nuget": "GroupDocs.Metadata.Mcp",    "server": "groupdocs-metadata",    "nugetBlocked": false, "platforms": ["net"] },
+    "parser":      { "displayName": "GroupDocs.Parser",     "nuget": "GroupDocs.Parser.Mcp",      "server": "groupdocs-parser",      "nugetBlocked": true,  "platforms": ["net"] },
+    "redaction":   { "displayName": "GroupDocs.Redaction",  "nuget": "GroupDocs.Redaction.Mcp",   "server": "groupdocs-redaction",   "nugetBlocked": false, "platforms": ["net"] },
+    "signature":   { "displayName": "GroupDocs.Signature",  "nuget": "GroupDocs.Signature.Mcp",   "server": "groupdocs-signature",   "nugetBlocked": false, "platforms": ["net"] },
+    "total":       { "displayName": "GroupDocs.Total",      "nuget": "GroupDocs.Total.Mcp",       "server": "groupdocs-total",       "nugetBlocked": true,  "platforms": ["net"] },
+    "viewer":      { "displayName": "GroupDocs.Viewer",     "nuget": "GroupDocs.Viewer.Mcp",      "server": "groupdocs-viewer",      "nugetBlocked": false, "platforms": ["net"] },
+    "watermark":   { "displayName": "GroupDocs.Watermark",  "nuget": "GroupDocs.Watermark.Mcp",   "server": "groupdocs-watermark",   "nugetBlocked": false, "platforms": ["net"] }
   }
 }
