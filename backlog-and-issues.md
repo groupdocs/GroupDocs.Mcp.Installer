@@ -4,11 +4,42 @@
 after the v2 upgrade. Each issue is written so it can be pasted directly into a GitHub
 issue (title in bold, suggested label in brackets).
 
+> **2026-09-15 pass — platform selection, metered licensing, MCP Registry (changelog 002).**
+> See §0 below for what this pass found and fixed; struck-through items further down were
+> resolved by it.
+
 Overall verdict: the toolkit is sound — safety rails (dry-run, backups, merge-not-
 overwrite, sequenced MCP sessions) are real and e2e-verified against published
 artifacts. The items below are ranked by how likely they are to bite a user.
 
 ---
+
+## 0. 2026-09-15 pass — findings
+
+### 0.1 ~~Nightly E2E has been red every night since at least 2026-09-07~~ — **FIXED 2026-09-15**
+The job verified Metadata against `sample.txt`. GroupDocs.Metadata does not support `.txt`, so
+`get_document_info` fails (`Nullable object must have a value.`) on 26.7.2 and 26.9.0 alike. The
+verifier was right to fail it; the sample was wrong. CI now generates a 329-byte ASCII PDF inline
+(no binary in the repo) — verified locally: handshake + license + document toolcall all PASS.
+
+### 0.2 ~~CI refusal checks passed on ANY exception~~ — **FIXED 2026-09-15**
+`try { ... } catch { "refused as expected" }` also caught "script not found" and every unrelated
+crash. Every refusal assertion now matches the expected message; a negative control (same check
+pointed at a missing script) was confirmed to fail. The naming-drift check likewise now fails when
+it finds zero products instead of passing vacuously.
+
+### 0.3 ~~Default config committed with machine-specific paths~~ — **FIXED 2026-09-15** `[hygiene]`
+`groupdocs-mcp.config.json` carried `d:\Storage\...` paths including a license file location
+(commit 448de49), and the wizard writes to that tracked file by default. Reset to neutral values.
+The paths remain in git history; they are paths, not key material.
+
+### 0.4 GroupDocs.Metadata: `get_document_info` on an unsupported format leaks a raw exception `[upstream]`
+`Nullable object must have a value.` instead of "format not supported". Belongs to the Metadata MCP
+product (errors-as-text contract is honoured, the message is not). Not an installer issue — logged
+here because it is what turned the nightly E2E red.
+
+### 0.5 Documentation drift `[docs]` — **FIXED 2026-09-15**
+"38 tools" for Total, `26.7.2` pin examples, no mention of metered licensing or `get_license_status`.
 
 ## 1. Confirmed bugs (reproduced during review)
 
@@ -41,7 +72,7 @@ interactive-only) — first CI run is the gate.
 
 New findings, none blocking:
 
-### 1b.1 **Folders are created before validation completes** `[ux]`
+### 1b.1 ~~Folders are created before validation completes~~ — **FIXED 2026-09-15** `[ux]`
 `storagePath`/`outputPath` are created right after config load — *before* product
 resolution, the NuGet-blocked guard, and client validation. An install that ends in
 `throw` (e.g. all products blocked) still leaves a freshly created storage folder
@@ -52,7 +83,7 @@ A compose-only config (`"clients": []`) delegated to the uninstaller yields an e
 client list — "removed 0" with no hint. Should fall back to `all` (matching the
 standalone script's default) or say why nothing happened.
 
-### 1b.3 **verify's docker launch skips backslash normalization** `[consistency]`
+### 1b.3 ~~verify's docker launch skips backslash normalization~~ — **FIXED 2026-09-15** (shared `ConvertTo-DockerHostPath`) `[consistency]`
 The installer normalizes `C:\docs` → `C:/docs` for `-v` mounts; `verify`'s
 `Get-Launch` does not. Docker Desktop tolerates backslash drive paths, so impact is
 low — but the two launch paths should agree (another argument for the shared module, 3.1).
@@ -91,7 +122,11 @@ real runs abort with the exact `setup/<os>` command to fix it (wizard offers to 
 inline), dry-runs warn and continue, `-SkipPreflight` bypasses, and the verifier exits 2.
 Verified: happy path, missing-runtime throw, dry-run continue, verify exit 2.
 
-### 2.4 **Single global version pin breaks mixed product sets** `[design]`
+### 2.4 ~~Single global version pin breaks mixed product sets~~ — **FIXED 2026-09-15** `[design]`
+Now: a pin is checked per product against the MCP Registry before any write; a product never
+published at the pin is skipped with its latest version in the message (verified: `-Version 26.9.0`
+skips Total, latest 26.7.3). Original analysis kept below.
+
 Products currently sit at different latest versions (26.7.2 / 26.7.3 / 26.7.4), so
 `"version": "26.7.2"` with `products: all` writes references that don't exist for some
 products (dnx/docker fail at first launch, not at install).
@@ -138,12 +173,12 @@ from NuGet/GHCR at install time (see backlog 4.4).
 - 4.3 **`-Status` / inventory command** — read all known client configs and print which
   GroupDocs servers are registered where, with channel/version — the natural companion
   to install/verify/uninstall (and the first thing support will ask a user for).
-- 4.4 **Per-product latest resolution** — query NuGet flat-container / GHCR tags at
+- 4.4 **Per-product latest resolution** *(partly done 2026-09-15: the Registry-resolved latest per product is shown; entries still use `latest` rather than the resolved number)* — query NuGet flat-container / GHCR tags at
   install time so `latest` pins the actual current version per product (reproducible
   installs + correct mixed-set pins; fixes 2.4 properly).
 - 4.5 **Rider + VS Code Insiders/VSCodium targets** — add when JetBrains stabilizes an
   MCP config surface; Insiders is just a second globalStorage base.
-- 4.6 **Manifest sync automation** — a tiny CI job (or script) that cross-checks
+- 4.6 **Manifest sync automation** *(groundwork 2026-09-15: registry names now live in the manifest per platform, with D1 rename candidates)* — a tiny CI job (or script) that cross-checks
   `manifest.json` against the MCP Registry (`search=groupdocs`) and opens a PR when a
   product appears/changes.
 - 4.7 **Interactive uninstall wizard** — mirror `-Interactive` for removal (pick from a
@@ -158,16 +193,16 @@ from NuGet/GHCR at install time (see backlog 4.4).
 | 3 | installer: validate client/product names before the first write (no half-applied installs) | bug, ux |
 | 4 | Merge/Remove: survive invalid JSON in one client config; skip + report instead of crashing | bug, ux |
 | ~~5~~ | ~~docker channel: preflight when the daemon is down~~ — fixed (installer + verifier, `setup/<os>` pointer) | ~~ux~~ |
-| 6 | Version pin: document per-set semantics; add per-product resolution (backlog 4.4) | design, docs |
+| ~~6~~ | ~~Version pin: per-product check against the MCP Registry~~ — fixed | ~~design, docs~~ |
 | 7 | Extract shared module (client map, prewarm, IO helpers) + Pester suite | refactor, tests |
 | 8 | Uninstall: `-RemoveImages` should enumerate all local tags of the product images | ux |
 | 9 | Cap `.bak` retention per client file | ux |
 | 10 | Verify `codex mcp add --env` and Viewer `get_view_info` arg shape against real clients | verification |
 | 11 | Publish to PowerShell Gallery with signed releases | distribution |
 | 12 | Add `-Status` inventory command | feature |
-| 13 | installer: no filesystem mutation (folder creation) before all validation passes | ux |
+| ~~13~~ | ~~installer: no filesystem mutation before all validation passes~~ — fixed | ~~ux~~ |
 | 14 | installer `-Uninstall`: empty config clients should sweep `all` (or explain doing nothing) | ux |
-| 15 | verify: normalize backslash host paths in docker launch (parity with installer) | consistency |
+| ~~15~~ | ~~verify: normalize backslash host paths in docker launch~~ — fixed | ~~consistency~~ |
 | 16 | docs: auto verification picks the alphabetically-first document; `verify.sampleFile` pins it | docs |
 
 ---
