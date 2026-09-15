@@ -1,10 +1,12 @@
 {
+  "platform": "net",
   "channel": "nuget",
   "registry": "ghcr",
   "version": "latest",
   "storagePath": "C:/GroupDocs/Documents",
   "outputPath": "",
   "licensePath": "",
+  "metered": false,
   "clients": [
     "codex"
   ],
