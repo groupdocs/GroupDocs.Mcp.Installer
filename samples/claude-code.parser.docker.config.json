@@ -1,10 +1,12 @@
 {
+  "platform": "net",
   "channel": "docker",
   "registry": "ghcr",
   "version": "latest",
   "storagePath": "D:/Storage/Documents",
   "outputPath": "D:/Storage/Output",
   "licensePath": "D:/Storage/Licenses/Conholdate.Total.lic",
+  "metered": false,
   "clients": [
     "claude-code"
   ],
