@@ -14,33 +14,48 @@
   (-Prewarm) and writes a docker-compose.yml (-EmitCompose).
 
   Run with -Interactive (or with no config file present) for a guided wizard
-  that asks for products, channel, clients, and shared paths, then saves the
-  config for next time.
+  that asks for platform, products, channel, clients, and shared paths, then
+  saves the config for next time.
 
-  Two delivery channels:
+  Platform = the runtime hosting the servers. .NET ("net") is the only one
+  available today and the default; Java, Python and Node.js are listed in
+  manifest.json as planned and refused until they ship. Channels are defined
+  per platform in the manifest. For "net":
     docker  - self-contained, native deps bundled (recommended cross-platform)
     nuget   - dnx auto-pull; needs .NET 10 SDK (+ libgdiplus on Linux/macOS)
+
+  A pinned -Version is checked against the MCP Registry before anything is
+  written, so a product that was never published at that version is skipped
+  with a reason instead of failing at first launch inside the AI client.
+
+  -Metered forwards GROUPDOCS_METERED_PUBLIC_KEY / GROUPDOCS_METERED_PRIVATE_KEY
+  from the environment. The keys are never written to any file.
 
 .EXAMPLE
   ./install-groupdocs-mcp.ps1 -Interactive
   ./install-groupdocs-mcp.ps1 -DryRun
   ./install-groupdocs-mcp.ps1 -Config my.config.json -Prewarm
   ./install-groupdocs-mcp.ps1 -Channel nuget -Products metadata,conversion -Clients vscode
+  ./install-groupdocs-mcp.ps1 -Platform net -Version 26.9.0 -Metered -Verify
   ./install-groupdocs-mcp.ps1 -EmitCompose -DryRun
 #>
 [CmdletBinding()]
 param(
   [string]   $Config    = (Join-Path $PSScriptRoot 'groupdocs-mcp.config.json'),
   [string]   $Manifest  = (Join-Path $PSScriptRoot 'manifest.json'),
-  [ValidateSet('docker','nuget')]
+  # Platform and channel are validated against manifest.json at runtime rather
+  # than with ValidateSet: a new platform (and its channels) is a manifest entry.
+  [string]   $Platform,
   [string]   $Channel,
   [ValidateSet('ghcr','dockerhub')]
   [string]   $Registry,
   [string[]] $Products,
   [string[]] $Clients,
   [string]   $Version,
+  [switch]   $Metered,
   [switch]   $Interactive,
   [switch]   $SkipPreflight,
+  [switch]   $SkipRegistryCheck,
   [switch]   $Verify,
   [switch]   $Prewarm,
   [switch]   $EmitCompose,
@@ -51,6 +66,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/platform.ps1')
 
 $KNOWN_CLIENTS = @('claude-desktop','claude-code','vscode','vscode-workspace','vs2022','cursor','windsurf','cline','codex')
 
@@ -79,9 +95,6 @@ function Test-IsMac {
   return $false
 }
 
-# Docker -v needs forward slashes; user configs on Windows often have backslashes.
-function Normalize-HostPath ([string]$p) { return ($p -replace '\\','/') }
-
 function Test-CommandExists ([string]$name) {
   return [bool](Get-Command $name -ErrorAction SilentlyContinue)
 }
@@ -95,14 +108,42 @@ function Invoke-Wizard {
   Write-Head "GroupDocs MCP setup wizard"
   Write-Host "  Press Enter to accept the [default] shown for each question.`n"
 
-  $prodList = ($allKeys | Sort-Object) -join ', '
-  Write-Host "  Products: $prodList"
+  # Platform first: it decides which products and channels exist.
+  $catalog  = Get-PlatformCatalog $mani
+  $defaultPf = Get-DefaultPlatform $mani
+  $pfLines = @($catalog.PSObject.Properties | ForEach-Object {
+    $tag = if ("$($_.Value.status)" -eq 'available') { '' } else { " ($($_.Value.status) - not installable yet)" }
+    "$($_.Name) = $($_.Value.displayName)$tag"
+  })
+  Write-Host "  Platforms: $($pfLines -join '; ')"
+  $pfDef = $null
+  while (-not $pfDef) {
+    $pfAns = Read-Host "  Which platform? [$defaultPf]"
+    if ([string]::IsNullOrWhiteSpace($pfAns)) { $pfAns = $defaultPf }
+    try { $pfDef = Resolve-Platform $mani $pfAns } catch { Write-Warn2 $_.Exception.Message }
+  }
+  $pfKey = $pfAns.Trim().ToLower()
+
+  $pfProducts = @($allKeys | Where-Object { Test-ProductOnPlatform $mani $pfKey $_ } | Sort-Object)
+  Write-Host "  Products: $($pfProducts -join ', ')"
   Write-Host "  ('all' = every individual product; 'total' alone = the all-in-one bundle)"
   $pAns = Read-Host "  Which products? (comma-separated) [all]"
   if ([string]::IsNullOrWhiteSpace($pAns)) { $pAns = 'all' }
 
-  $cAns = Read-Host "  Channel - docker (self-contained, recommended) or nuget (dnx, needs .NET 10 SDK) [docker]"
-  if ([string]::IsNullOrWhiteSpace($cAns)) { $cAns = 'docker' }
+  $pkgChannel = Get-PackageChannel $pfDef
+  $prereq = if ($pfDef.packageRunner) { $pfDef.packageRunner.prerequisite } else { '' }
+  $chDefault = if ($pfDef.defaultChannel) { "$($pfDef.defaultChannel)" } else { @($pfDef.channels)[0] }
+  $chHelp = @($pfDef.channels | ForEach-Object {
+    if ($_ -eq 'docker') { 'docker (self-contained, recommended)' }
+    elseif ($_ -eq $pkgChannel) { "$_ ($($pfDef.packageRunner.command), needs $prereq)" }
+    else { "$_" }
+  }) -join ' or '
+  $cAns = $null
+  while (-not $cAns) {
+    $cAns = Read-Host "  Channel - $chHelp [$chDefault]"
+    if ([string]::IsNullOrWhiteSpace($cAns)) { $cAns = $chDefault }
+    if (@($pfDef.channels) -notcontains $cAns.Trim().ToLower()) { Write-Warn2 "Choose one of: $($pfDef.channels -join ', ')"; $cAns = $null }
+  }
 
   $rAns = 'ghcr'
   if ($cAns.Trim().ToLower() -eq 'docker') {
@@ -118,15 +159,25 @@ function Invoke-Wizard {
   if ([string]::IsNullOrWhiteSpace($sAns)) { $sAns = (Get-Location).Path }
 
   $oAns = Read-Host "  Separate output folder (Enter = same as storage)"
-  $lAns = Read-Host "  Path to GroupDocs license .lic file (Enter = evaluation mode)"
+  $lAns = Read-Host "  Path to GroupDocs license .lic file (Enter = none)"
 
-  $vAns = Read-Host "  Version pin, e.g. 26.7.2 (Enter = latest)"
+  # Metered keys are NOT asked for: typing a private key into a prompt puts it in
+  # terminal scrollback, and saving it would put it in this config file. Only the
+  # choice is recorded; the keys stay in the environment.
+  Write-Host "  Metered (pay-per-use) licensing reads $((Get-MeteredVariableNames) -join ' and ') from your environment."
+  foreach ($n in Get-MeteredVariableNames) { Write-Host "    $n : $(Get-SecretPresence $n)" }
+  $mDefault = if ((Get-MeteredConfigState) -eq 'complete') { 'Y/n' } else { 'y/N' }
+  $mAns = Read-Host "  Use metered licensing? [$mDefault]"
+  $useMetered = if ([string]::IsNullOrWhiteSpace($mAns)) { $mDefault -eq 'Y/n' } else { "$mAns".Trim().ToLower() -in @('y','yes') }
+
+  $vAns = Read-Host "  Version pin, e.g. 26.9.0 (Enter = latest)"
   if ([string]::IsNullOrWhiteSpace($vAns)) { $vAns = 'latest' }
 
-  $verAns = Read-Host "  Run post-install verification when done? (spawns each server, checks its tools, and - if a document exists in the storage folder - runs get_document_info on it) [Y/n]"
+  $verAns = Read-Host "  Run post-install verification when done? (spawns each server, checks its tools and license mode, and - if a document exists in the storage folder - runs get_document_info on it) [Y/n]"
   if ("$verAns".Trim().ToLower() -notin @('n','no')) { $script:WizardWantsVerify = $true }
 
   $doc = [ordered]@{
+    platform    = $pfKey
     channel     = $cAns.Trim().ToLower()
     registry    = $rAns.Trim().ToLower()
     clients     = @($clAns -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
@@ -134,6 +185,7 @@ function Invoke-Wizard {
     storagePath = $sAns.Trim()
     outputPath  = "$oAns".Trim()
     licensePath = "$lAns".Trim()
+    metered     = [bool]$useMetered
     products    = @($pAns -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
   }
   $json = ($doc | ConvertTo-Json -Depth 6)
@@ -156,26 +208,41 @@ if ($Interactive -or -not (Test-Path $Config)) {
 # empty array (-Clients @(), the compose-only flow) overrides too - a bare
 # truthiness check treats @() as "not passed" and silently falls back to the
 # config's clients.
-if ($Channel)  { $cfg.channel     = $Channel }
+if ($Platform) { $cfg | Add-Member platform $Platform -Force }
+if ($Channel)  { $cfg | Add-Member channel  $Channel  -Force }
 if ($Registry) { $cfg | Add-Member registry $Registry -Force }
 if ($Version)  { $cfg | Add-Member version  $Version  -Force }
 if ($Products) { $cfg | Add-Member products $Products -Force }
+if ($PSBoundParameters.ContainsKey('Metered')) { $cfg | Add-Member metered ([bool]$Metered) -Force }
 if ($PSBoundParameters.ContainsKey('Clients')) { $cfg | Add-Member clients $Clients -Force }
 
-$channel     = if ($cfg.channel)     { "$($cfg.channel)".ToLower() } else { 'docker' }
+# Platform before channel: the platform decides which channels are valid, and a
+# config that predates platforms (no "platform" key) means .NET, as it always did.
+$platformKey = if ($cfg.PSObject.Properties.Name -contains 'platform' -and $cfg.platform) { "$($cfg.platform)".ToLower() } else { Get-DefaultPlatform $mani }
+$platformDef = Resolve-Platform $mani $platformKey
+$packageChannel = Get-PackageChannel $platformDef
+$defaultChannel = if ($platformDef.defaultChannel) { "$($platformDef.defaultChannel)" } else { "$(@($platformDef.channels)[0])" }
+
+$channel     = if ($cfg.channel)     { "$($cfg.channel)".ToLower() } else { $defaultChannel }
+Assert-PlatformChannel $platformKey $platformDef $channel
 $registry    = if ($cfg.registry)    { "$($cfg.registry)".ToLower() } else { 'ghcr' }
 $version     = if ($cfg.version)      { "$($cfg.version)" }            else { 'latest' }
 $storagePath = if ($cfg.storagePath) { "$($cfg.storagePath)" }        else { (Get-Location).Path }
 $outputPath  = if ($cfg.outputPath)  { "$($cfg.outputPath)" }         else { '' }
 $licensePath = if ($cfg.licensePath) { "$($cfg.licensePath)" }        else { '' }
+$useMetered  = ($cfg.PSObject.Properties.Name -contains 'metered') -and [bool]$cfg.metered
 $clients     = @($cfg.clients)
 $requested   = @($cfg.products)
 
 Write-Head "GroupDocs MCP installer"
-Write-Info "channel=$channel  registry=$registry  version=$version"
+Write-Info "platform=$platformKey ($($platformDef.displayName))  channel=$channel  registry=$registry  version=$version"
 if ($outputPath -ne '') { Write-Info "storage=$storagePath  output=$outputPath" }
 else                    { Write-Info "storage=$storagePath  output=(same as storage)" }
-if ($licensePath -ne '') { Write-Info "license=$licensePath" } else { Write-Info "license=(evaluation mode)" }
+$licenseDesc = if ($useMetered -and $licensePath -ne '') { "metered (license file ignored: $licensePath)" }
+               elseif ($useMetered)                     { 'metered (keys from environment)' }
+               elseif ($licensePath -ne '')             { "file $licensePath" }
+               else                                     { '(evaluation mode)' }
+Write-Info "license=$licenseDesc"
 
 # --- Prerequisite preflight (same checks as setup/<os> --check) --------------
 # Runs BEFORE any filesystem mutation: a config that points at a missing runtime
@@ -196,8 +263,8 @@ function Test-Prerequisites {
       if ($LASTEXITCODE -ne 0) { $problems += "docker daemon not reachable (is Docker Desktop / dockerd running?)" }
     }
   } else {
-    $dnxName = if (Test-IsWindows) { 'dnx.cmd' } else { 'dnx' }
-    if (-not (Test-CommandExists $dnxName)) { $problems += "'$dnxName' not found - the nuget channel needs the .NET 10 SDK" }
+    $runnerName = Get-PackageRunnerCommand $mani $platformKey (Test-IsWindows)
+    if (-not (Test-CommandExists $runnerName)) { $problems += "'$runnerName' not found - the $channel channel needs the $($platformDef.packageRunner.prerequisite)" }
   }
   return @($problems)
 }
@@ -230,13 +297,17 @@ if (-not $SkipPreflight) {
 if ($licensePath -ne '' -and -not (Test-Path $licensePath)) {
   Write-Warn2 "license file not found at '$licensePath' - servers will run in evaluation mode until it exists."
 }
-if (-not (Test-Path $storagePath)) {
-  if ($DryRun) { Write-Info "(dry-run) storage folder '$storagePath' does not exist - would create it" }
-  else { New-Item -ItemType Directory -Force -Path $storagePath | Out-Null; Write-Ok "created storage folder $storagePath" }
-}
-if ($outputPath -ne '' -and -not (Test-Path $outputPath)) {
-  if ($DryRun) { Write-Info "(dry-run) output folder '$outputPath' does not exist - would create it" }
-  else { New-Item -ItemType Directory -Force -Path $outputPath | Out-Null; Write-Ok "created output folder $outputPath" }
+
+# Metered: report presence only - never a value. Missing keys do not block the
+# install (the keys can be set afterwards, before the client restarts), but the
+# user must hear now that the server would otherwise run in evaluation mode.
+if ($useMetered) {
+  foreach ($n in Get-MeteredVariableNames) { Write-Info "$n : $(Get-SecretPresence $n)" }
+  switch (Get-MeteredConfigState) {
+    'missing' { Write-Warn2 "metered is on but neither key is set in this environment - servers will run in evaluation mode until both are set where the AI client starts." }
+    'partial' { Write-Warn2 "metered is on but only one key is set - metered licensing needs BOTH; servers will ignore a half-configured pair." }
+  }
+  if ($licensePath -ne '') { Write-Warn2 "both metered keys and licensePath are configured - servers use metered licensing and ignore the license file." }
 }
 
 # --- Resolve product list --------------------------------------------------
@@ -245,9 +316,13 @@ foreach ($p in $requested) {
   $k = "$p".ToLower().Trim()
   if ($k -eq 'all') {
     # "all" = every individual product; Total is the bundle equivalent, so skip it here.
-    foreach ($a in $allKeys) { if ($a -ne 'total' -and -not $resolved.Contains($a)) { $resolved.Add($a) } }
+    foreach ($a in $allKeys) {
+      if ($a -ne 'total' -and (Test-ProductOnPlatform $mani $platformKey $a) -and -not $resolved.Contains($a)) { $resolved.Add($a) }
+    }
   } elseif ($allKeys -contains $k) {
-    if (-not $resolved.Contains($k)) { $resolved.Add($k) }
+    if (-not (Test-ProductOnPlatform $mani $platformKey $k)) {
+      Write-Warn2 "'$k' is not available on platform '$platformKey' - skipped. Available on: $((Get-ProductPlatforms $mani $k) -join ', ')"
+    } elseif (-not $resolved.Contains($k)) { $resolved.Add($k) }
   } else {
     Write-Warn2 "Unknown product '$p' - skipped. Known: $($allKeys -join ', ')"
   }
@@ -257,67 +332,108 @@ if ($resolved.Contains('total') -and $resolved.Count -gt 1) {
   Write-Warn2 "'total' bundles every product; the individual servers you also listed are redundant (duplicate tools)."
 }
 
-# nuget channel can't serve the >250MB bundles
-if ($channel -eq 'nuget') {
+# The package channel can't serve bundles over the package registry's size limit.
+if ($channel -eq $packageChannel) {
   foreach ($k in @($resolved)) {
-    if ($mani.products.$k.nugetBlocked) {
-      Write-Warn2 "'$k' is NuGet-blocked (>250MB, ONNX models) - use -Channel docker for it. Skipping on nuget."
+    if (Test-PackageBlocked $mani $platformKey $k) {
+      Write-Warn2 "'$k' is not published to $channel ($($platformDef.packageRunner.sizeLimitNote)) - use -Channel docker for it. Skipping on $channel."
       [void]$resolved.Remove($k)
     }
   }
   if ($resolved.Count -eq 0) {
-    throw "All requested products are NuGet-blocked - nothing left to install on the nuget channel. Re-run with -Channel docker."
+    throw "All requested products are $channel-blocked - nothing left to install on the $channel channel. Re-run with -Channel docker."
   }
 }
-Write-Info "products: $($resolved -join ', ')"
 
-# --- Image / package refs ---------------------------------------------------
-function Get-ImageRef ($key) {
-  $tag = if ($version -eq 'latest' -or [string]::IsNullOrWhiteSpace($version)) { 'latest' } else { $version }
-  if ($registry -eq 'dockerhub') { return "groupdocs/$key-net-mcp:$tag" }
-  return "ghcr.io/groupdocs-$key/$key-net-mcp:$tag"
+# --- MCP Registry check ------------------------------------------------------
+# The registry is the one version index that covers every product, including the
+# docker-first ones with no NuGet package. A pinned version is checked here,
+# BEFORE any write: products were never guaranteed to share a version (Total can
+# trail the rest), and a pin that does not exist for one product used to surface
+# only at first launch inside the AI client. Offline is a warning, not a stop.
+$registryInfo = @{}
+if (-not $SkipRegistryCheck) {
+  $regIndex = Get-RegistryIndex
+  if (-not $regIndex.ok) {
+    Write-Warn2 "MCP Registry unreachable ($($regIndex.error)) - versions not checked. Use -SkipRegistryCheck to skip this lookup offline."
+  } else {
+    foreach ($k in @($resolved)) {
+      $info = Get-RegistryProductInfo $mani $platformKey $k $regIndex
+      $registryInfo[$k] = $info
+      if (-not $info.found) {
+        Write-Warn2 "'$k' has no MCP Registry entry ($($info.name)) - version not checked."
+        continue
+      }
+      if (-not (Test-IsLatestVersion $version) -and @($info.versions) -notcontains $version.Trim()) {
+        Write-Warn2 "'$k' was never published at $version (latest $($info.latest)) - skipped. Pin a published version or use 'latest'."
+        [void]$resolved.Remove($k)
+      }
+    }
+    if ($resolved.Count -eq 0) { throw "No requested product is published at version $version. Nothing to do." }
+  }
 }
-function Get-PackageRef ($key) {
-  $pkg = $mani.products.$key.nuget
-  if ($version -eq 'latest' -or [string]::IsNullOrWhiteSpace($version)) { return $pkg }
-  return "$pkg@$version"
+
+$productLines = @($resolved | ForEach-Object {
+  if ($registryInfo.ContainsKey($_) -and $registryInfo[$_].found) { "$_ ($($registryInfo[$_].latest))" } else { $_ }
+})
+if (-not (Test-IsLatestVersion $version)) { Write-Info "products @ ${version}: $($resolved -join ', ')" }
+elseif ($registryInfo.Count -gt 0)        { Write-Info "products (latest per MCP Registry): $($productLines -join ', ')" }
+else                                      { Write-Info "products (latest, not checked): $($resolved -join ', ')" }
+
+# Folders are created only now, after every validation that can abort the run -
+# a refused install must not leave a freshly created folder behind (backlog 1b.1).
+if (-not (Test-Path $storagePath)) {
+  if ($DryRun) { Write-Info "(dry-run) storage folder '$storagePath' does not exist - would create it" }
+  else { New-Item -ItemType Directory -Force -Path $storagePath | Out-Null; Write-Ok "created storage folder $storagePath" }
+}
+if ($outputPath -ne '' -and -not (Test-Path $outputPath)) {
+  if ($DryRun) { Write-Info "(dry-run) output folder '$outputPath' does not exist - would create it" }
+  else { New-Item -ItemType Directory -Force -Path $outputPath | Out-Null; Write-Ok "created output folder $outputPath" }
 }
 
 # --- Build one MCP server entry -------------------------------------------
 function New-DockerEntry ($key) {
-  $image = Get-ImageRef $key
-  $sp = Normalize-HostPath $storagePath
+  $image = Get-ImageRef $mani $platformKey $key $registry $version
+  $sp = ConvertTo-DockerHostPath $storagePath
   $dargs = [System.Collections.Generic.List[string]]::new()
   @('run','--rm','-i') | ForEach-Object { $dargs.Add($_) }
   $dargs.Add('-v'); $dargs.Add("$sp`:/data")
   $dargs.Add('-e'); $dargs.Add('GROUPDOCS_MCP_STORAGE_PATH=/data')
   if ($outputPath -ne '') {
-    $op = Normalize-HostPath $outputPath
+    $op = ConvertTo-DockerHostPath $outputPath
     $dargs.Add('-v'); $dargs.Add("$op`:/data/output")
     $dargs.Add('-e'); $dargs.Add('GROUPDOCS_MCP_OUTPUT_PATH=/data/output')
   }
   if ($licensePath -ne '') {
-    $licDir  = Normalize-HostPath (Split-Path -Parent $licensePath)
+    $licDir  = ConvertTo-DockerHostPath (Split-Path -Parent $licensePath)
     $licName = Split-Path -Leaf   $licensePath
     $dargs.Add('-v'); $dargs.Add("$licDir`:/license:ro")
     $dargs.Add('-e'); $dargs.Add("GROUPDOCS_LICENSE_PATH=/license/$licName")
+  }
+  if ($useMetered) {
+    # `-e NAME` with no value copies NAME from the process launching docker - the
+    # AI client. The key itself is never written into the client config.
+    foreach ($n in Get-MeteredVariableNames) { $dargs.Add('-e'); $dargs.Add($n) }
   }
   $dargs.Add($image)
   return [ordered]@{ command = 'docker'; args = @($dargs) }
 }
 
-function New-NugetEntry ($key) {
-  $ref = Get-PackageRef $key
+# Package channel (nuget/dnx on net). Metered keys need no entry here: a stdio
+# server inherits its client's environment, so writing them would only create a
+# second, literal copy of a secret in a plain-text config file.
+function New-PackageEntry ($key) {
   $env = [ordered]@{ GROUPDOCS_MCP_STORAGE_PATH = $storagePath }
   if ($outputPath  -ne '') { $env.GROUPDOCS_MCP_OUTPUT_PATH = $outputPath }
   if ($licensePath -ne '') { $env.GROUPDOCS_LICENSE_PATH    = $licensePath }
-  return [ordered]@{ command = 'dnx'; args = @($ref, '--yes'); env = $env }
+  $cmd = "$($platformDef.packageRunner.command)"
+  return [ordered]@{ command = $cmd; args = @(Get-PackageRunnerArgs $mani $platformKey $key $version); env = $env }
 }
 
 $entries = [ordered]@{}
 foreach ($k in $resolved) {
-  $name = $mani.products.$k.server
-  $entries[$name] = if ($channel -eq 'docker') { New-DockerEntry $k } else { New-NugetEntry $k }
+  $name = Get-ProductName $mani $platformKey $k 'server'
+  $entries[$name] = if ($channel -eq 'docker') { New-DockerEntry $k } else { New-PackageEntry $k }
 }
 
 # --- Client config targets -------------------------------------------------
@@ -422,7 +538,7 @@ if ($Uninstall) {
   # uninstall-groupdocs-mcp.ps1 directly (defaults: all products, ALL clients)
   # to sweep entries left behind after the config changed.
   $un = Join-Path $PSScriptRoot 'uninstall-groupdocs-mcp.ps1'
-  $unArgs = @{ Manifest = $Manifest; Products = @('all'); Clients = @($clients); Registry = $registry; Version = $version }
+  $unArgs = @{ Manifest = $Manifest; Platform = $platformKey; Products = @('all'); Clients = @($clients); Registry = $registry; Version = $version }
   if ($RemoveImages)  { $unArgs.RemoveImages  = $true }
   if ($RemoveCompose) { $unArgs.RemoveCompose = $true }
   if ($DryRun)        { $unArgs.DryRun        = $true }
@@ -443,19 +559,22 @@ function Write-Compose {
   $lines = [System.Collections.Generic.List[string]]::new()
   $lines.Add('services:')
   foreach ($k in $resolved) {
-    $name  = $mani.products.$k.server
-    $image = Get-ImageRef $k
-    $sp = Normalize-HostPath $storagePath
+    $name  = Get-ProductName $mani $platformKey $k 'server'
+    $image = Get-ImageRef $mani $platformKey $k $registry $version
+    $sp = ConvertTo-DockerHostPath $storagePath
     $lines.Add("  $name`:")
     $lines.Add("    image: $image")
     $lines.Add('    volumes:')
     $lines.Add("      - `"$sp`:/data`"")
-    if ($outputPath  -ne '') { $lines.Add("      - `"$(Normalize-HostPath $outputPath)`:/data/output`"") }
-    if ($licensePath -ne '') { $lines.Add("      - `"$(Normalize-HostPath (Split-Path -Parent $licensePath))`:/license:ro`"") }
+    if ($outputPath  -ne '') { $lines.Add("      - `"$(ConvertTo-DockerHostPath $outputPath)`:/data/output`"") }
+    if ($licensePath -ne '') { $lines.Add("      - `"$(ConvertTo-DockerHostPath (Split-Path -Parent $licensePath))`:/license:ro`"") }
     $lines.Add('    environment:')
     $lines.Add('      GROUPDOCS_MCP_STORAGE_PATH: /data')
     if ($outputPath  -ne '') { $lines.Add('      GROUPDOCS_MCP_OUTPUT_PATH: /data/output') }
     if ($licensePath -ne '') { $lines.Add("      GROUPDOCS_LICENSE_PATH: /license/$(Split-Path -Leaf $licensePath)") }
+    # A key with no value is taken from the shell running `docker compose` - the
+    # compose file never holds the secret.
+    if ($useMetered) { foreach ($n in Get-MeteredVariableNames) { $lines.Add("      ${n}:") } }
     $lines.Add('    stdin_open: true')
     $lines.Add('    tty: true')
     $lines.Add('    restart: unless-stopped')
@@ -482,21 +601,21 @@ if ($Prewarm) {
   Write-Head "Prewarming ($channel)"
   foreach ($k in $resolved) {
     if ($channel -eq 'docker') {
-      $image = Get-ImageRef $k
+      $image = Get-ImageRef $mani $platformKey $k $registry $version
       Write-Info "docker pull $image"
       if (-not $DryRun) { & docker pull $image }
     } else {
-      $ref = Get-PackageRef $k
-      Write-Info "dnx $ref --yes  (download + first launch, stdin closed)"
+      $runArgs = Get-PackageRunnerArgs $mani $platformKey $k $version
+      Write-Info "$($platformDef.packageRunner.command) $($runArgs -join ' ')  (download + first launch, stdin closed)"
       if ($DryRun) { continue }
       # Full path is required: dnx.cmd's internal %~dp0dotnet.exe resolves against
       # the wrong directory when the shim is started by bare name from Process.Start.
-      $dnxName = if (Test-IsWindows) { 'dnx.cmd' } else { 'dnx' }
+      $dnxName = Get-PackageRunnerCommand $mani $platformKey (Test-IsWindows)
       $dnxCmd  = (Get-Command $dnxName -ErrorAction SilentlyContinue).Source
-      if (-not $dnxCmd) { Write-Warn2 "'$dnxName' not found on PATH - install the .NET 10 SDK. Skipping prewarm."; continue }
+      if (-not $dnxCmd) { Write-Warn2 "'$dnxName' not found on PATH - install the $($platformDef.packageRunner.prerequisite). Skipping prewarm."; continue }
       $psi = New-Object System.Diagnostics.ProcessStartInfo
       $psi.FileName  = $dnxCmd
-      $psi.Arguments = "$ref --yes"
+      $psi.Arguments = ($runArgs -join ' ')
       $psi.RedirectStandardInput  = $true
       $psi.RedirectStandardOutput = $true
       $psi.RedirectStandardError  = $true
@@ -532,21 +651,22 @@ if (($Verify -or $script:WizardWantsVerify) -and -not $DryRun) {
     Write-Head "Prewarming before verification"
     foreach ($k in $resolved) {
       if ($channel -eq 'docker') {
-        $image = Get-ImageRef $k
+        $image = Get-ImageRef $mani $platformKey $k $registry $version
         Write-Info "docker pull $image"
         & docker pull $image | Out-Null
       }
-      # nuget: the -Prewarm block above is the thorough warm; for verification the
-      # verifier's own launch downloads on demand within its timeout - acceptable
-      # when the package is already cached, which -Prewarm guarantees. Warm here too:
+      # package channel: the -Prewarm block above is the thorough warm; for
+      # verification the verifier's own launch downloads on demand within its
+      # timeout - acceptable when the package is already cached, which -Prewarm
+      # guarantees. Warm here too:
       else {
-        $ref = Get-PackageRef $k
-        $dnxName2 = if (Test-IsWindows) { 'dnx.cmd' } else { 'dnx' }
+        $runArgs2 = Get-PackageRunnerArgs $mani $platformKey $k $version
+        $dnxName2 = Get-PackageRunnerCommand $mani $platformKey (Test-IsWindows)
         $dnxCmd2  = (Get-Command $dnxName2 -ErrorAction SilentlyContinue).Source
         if ($dnxCmd2) {
-          Write-Info "dnx $ref --yes (cache warm)"
+          Write-Info "$($platformDef.packageRunner.command) $($runArgs2 -join ' ') (cache warm)"
           $psi2 = New-Object System.Diagnostics.ProcessStartInfo
-          $psi2.FileName = $dnxCmd2; $psi2.Arguments = "$ref --yes"
+          $psi2.FileName = $dnxCmd2; $psi2.Arguments = ($runArgs2 -join ' ')
           $psi2.RedirectStandardInput = $true; $psi2.RedirectStandardOutput = $true; $psi2.RedirectStandardError = $true
           $psi2.UseShellExecute = $false
           try {
@@ -561,7 +681,9 @@ if (($Verify -or $script:WizardWantsVerify) -and -not $DryRun) {
   }
   Write-Head "Post-install verification"
   $vs = Join-Path $PSScriptRoot 'verify-groupdocs-mcp.ps1'
-  & $vs -Config $Config -Manifest $Manifest -Channel $channel -Registry $registry -Version $version -Products @($resolved) -TimeoutSec 180
+  $vsArgs = @{ Config = $Config; Manifest = $Manifest; Platform = $platformKey; Channel = $channel; Registry = $registry; Version = $version; Products = @($resolved); TimeoutSec = 180 }
+  if ($useMetered) { $vsArgs.Metered = $true }
+  & $vs @vsArgs
   exit $LASTEXITCODE
 }
-Write-Info "Next: ./verify-groupdocs-mcp.ps1  (auto level: handshake + get_document_info on the first document in your storage folder)"
+Write-Info "Next: ./verify-groupdocs-mcp.ps1  (auto level: handshake + license mode + get_document_info on the first document in your storage folder)"
