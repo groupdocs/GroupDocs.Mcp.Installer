@@ -29,7 +29,7 @@ On macOS/Linux run the scripts with `pwsh`; on Windows any PowerShell (5.1 or 7+
 
 ## 2. Install — pick your style
 
-**Fully interactive** — wizard asks products, channel, clients, folders, license, then verifies:
+**Fully interactive** — wizard asks platform, products, channel, clients, folders, license / metered, then verifies:
 
 ```powershell
 ./install-groupdocs-mcp.ps1 -Interactive
@@ -53,7 +53,7 @@ On macOS/Linux run the scripts with `pwsh`; on Windows any PowerShell (5.1 or 7+
 ./install-groupdocs-mcp.ps1 -DryRun
 ```
 
-Useful switches: `-Verify` (prewarm caches + run verification after install), `-Prewarm` (docker pull / dnx first-launch so the first agent call is instant), `-EmitCompose` (write `docker-compose.yml`), `-Version 26.7.2` (pin), `-SkipPreflight`.
+Useful switches: `-Verify` (prewarm caches + run verification after install), `-Prewarm` (docker pull / dnx first-launch so the first agent call is instant), `-EmitCompose` (write `docker-compose.yml`), `-Version 26.9.0` (pin — checked per product against the MCP Registry), `-Metered` (metered licensing from your environment), `-Platform net`, `-SkipPreflight`, `-SkipRegistryCheck`.
 
 ## 3. Config file
 
@@ -61,19 +61,24 @@ Useful switches: `-Verify` (prewarm caches + run verification after install), `-
 
 ```json
 {
+  "platform":    "net",
   "channel":     "docker",
   "registry":    "ghcr",
   "clients":     ["claude-desktop", "vscode"],
   "version":     "latest",
   "storagePath": "D:/Storage/Documents",
   "outputPath":  "D:/Storage/Output",
-  "licensePath": "D:/Storage/Licenses/Conholdate.Total.lic",
+  "licensePath": "",
+  "metered":     true,
   "products":    ["metadata", "conversion", "parser"]
 }
 ```
 
-- `products`: list, or `"all"` (every product; `"total"` alone = the all-in-one bundle, 38 tools).
-- `licensePath: ""` = evaluation mode (safe; watermarks/limits apply).
+- `platform`: `net` (.NET) — the default and the only one available today; Java, Python and Node.js are planned.
+- `products`: list, or `"all"` (every product; `"total"` alone = the all-in-one bundle).
+- `licensePath: ""` with `metered: false` = evaluation mode (safe; watermarks/limits apply).
+- `metered: true` reads `GROUPDOCS_METERED_PUBLIC_KEY` / `GROUPDOCS_METERED_PRIVATE_KEY` from your environment. **The keys are never written** to this file, to client configs, or to the console.
+- A pinned `version` is checked per product: products never published at that version are skipped with the reason.
 - Any CLI switch overrides the file.
 
 ### Channels
@@ -95,13 +100,14 @@ Existing MCP servers in your configs are **never touched**; every modified file 
 ## 4. Verify
 
 ```powershell
-./verify-groupdocs-mcp.ps1                    # auto (default): MCP handshake + get_document_info
-                                              # on the first document found in storagePath
+./verify-groupdocs-mcp.ps1                    # auto (default): MCP handshake + license mode +
+                                              # get_document_info on the first document in storagePath
+./verify-groupdocs-mcp.ps1 -Metered           # also FAIL any server that did not engage metered licensing
 ./verify-groupdocs-mcp.ps1 -Level handshake   # minimum: server starts + lists tools
 ./verify-groupdocs-mcp.ps1 -Level toolcall    # strict: explicit verify.cases from config
 ```
 
-Drop any document into your storage folder to get the deeper engine check. Engine failures returned as text ("… failed for '…'") are detected and reported with the engine's message. Exit codes: `0` all pass · `1` failures · `2` nothing verified — CI-ready.
+The summary shows each server's real `version` and its `license` mode (`evaluation` / `licensed` / `metered`). Drop a supported document (`.pdf`, `.docx`, …) into your storage folder to get the deeper engine check. Engine failures returned as text ("… failed for '…'") are detected and reported with the engine's message. Exit codes: `0` all pass · `1` failures · `2` nothing verified — CI-ready.
 
 ## 5. Remove
 
@@ -142,6 +148,9 @@ The agent becomes your document-output test harness.
 | "docker daemon not reachable" | Start Docker Desktop / `dockerd`; the preflight catches this before anything is written |
 | `claude` / `codex` skipped | Their CLI isn't on PATH in that shell — copy the printed one-liner into a shell where it is |
 | First tool call is slow / fails once | Cold cache — run `./install-groupdocs-mcp.ps1 -Prewarm` (downloads and first-launches each package/image) |
+| `'<product>' was never published at <version>` | Products don't all share a version — pin one that exists (the message shows the latest) or use `latest` |
+| `license: expected metered, server is running 'evaluation'` | The message carries the server's reason — keys rejected, or only one of the two set. Set both where the AI client starts (macOS Finder apps: `launchctl setenv`) |
+| `MCP Registry unreachable` | Offline/proxy — install continues without the version check; `-SkipRegistryCheck` skips the lookup |
 | Want your old client config back | Restore the `.bak` written next to it |
 
 ---
