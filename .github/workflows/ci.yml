@@ -70,33 +70,117 @@ jobs:
         shell: pwsh
         run: ./uninstall-groupdocs-mcp.ps1 -DryRun
 
+      # Refusal checks match the refusal MESSAGE, not just "something threw" - a
+      # bare catch would pass on a typo'd script path or any unrelated crash.
       - name: NuGet-blocked refusal is enforced
         shell: pwsh
         run: |
           try {
-            ./install-groupdocs-mcp.ps1 -Channel nuget -Products parser,total -Clients vscode-workspace -DryRun
+            ./install-groupdocs-mcp.ps1 -Channel nuget -Products parser,total -Clients vscode-workspace -DryRun -SkipRegistryCheck
             Write-Host "::error::expected the installer to throw for all-NuGet-blocked products"
             exit 1
-          } catch { Write-Host "refused as expected: $($_.Exception.Message)" }
+          } catch {
+            if ($_.Exception.Message -notmatch 'nuget-blocked') { Write-Host "::error::threw for the wrong reason: $($_.Exception.Message)"; exit 1 }
+            Write-Host "refused as expected: $($_.Exception.Message)"
+          }
+
+      - name: Platform contract (planned / unknown platform, channel per platform)
+        shell: pwsh
+        run: |
+          $cases = @(
+            @{ label = 'planned platform';        expect = 'is planned, not yet installable';  args = @{ Platform = 'java' } },
+            @{ label = 'unknown platform';        expect = 'Unknown platform';                 args = @{ Platform = 'no-such-platform' } },
+            @{ label = 'channel not on platform'; expect = 'is not available on platform';     args = @{ Platform = 'net'; Channel = 'npm' } }
+          )
+          $bad = $false
+          foreach ($c in $cases) {
+            $a = $c.args + @{ Clients = @('vscode-workspace'); DryRun = $true; SkipPreflight = $true; SkipRegistryCheck = $true }
+            try { ./install-groupdocs-mcp.ps1 @a; Write-Host "::error::$($c.label): expected a refusal"; $bad = $true }
+            catch {
+              if ($_.Exception.Message -notmatch [regex]::Escape($c.expect)) { Write-Host "::error::$($c.label): threw for the wrong reason - $($_.Exception.Message)"; $bad = $true }
+              else { Write-Host "$($c.label): refused as expected - $($_.Exception.Message)" }
+            }
+          }
+          if ($bad) { exit 1 }
+
+      - name: Manifest naming agrees with legacy product fields
+        shell: pwsh
+        run: |
+          # Downstream automation still reads products.<key>.nuget / .server; the
+          # net platform patterns must produce exactly those names.
+          . ./lib/platform.ps1
+          $mani = Get-Content -Raw manifest.json -ErrorAction Stop | ConvertFrom-Json
+          $keys = @($mani.products.PSObject.Properties.Name)
+          if ($keys.Count -lt 1) { Write-Host "::error::manifest.json lists no products - nothing was checked"; exit 1 }
+          $bad = $false
+          foreach ($k in $keys) {
+            $pkg = Get-ProductName $mani 'net' $k 'package'
+            $srv = Get-ProductName $mani 'net' $k 'server'
+            if ($pkg -ne $mani.products.$k.nuget)  { Write-Host "::error::$k package drift: pattern=$pkg manifest=$($mani.products.$k.nuget)"; $bad = $true }
+            if ($srv -ne $mani.products.$k.server) { Write-Host "::error::$k server drift: pattern=$srv manifest=$($mani.products.$k.server)"; $bad = $true }
+          }
+          if ($bad) { exit 1 } else { Write-Host "naming patterns agree for $($keys.Count) products" }
+
+      - name: Unpublished version pin is refused before any write (MCP Registry)
+        shell: pwsh
+        run: |
+          # 0.0.1 will never be published, so this stays deterministic as real
+          # versions ship. Needs network; the registry being down is a warning,
+          # not a refusal - skip the assertion in that case rather than go red.
+          . ./lib/platform.ps1
+          if (-not (Get-RegistryIndex).ok) { Write-Host "::warning::MCP Registry unreachable - assertion skipped"; exit 0 }
+          try {
+            ./install-groupdocs-mcp.ps1 -Products metadata -Version 0.0.1 -Clients vscode-workspace -DryRun -SkipPreflight
+            Write-Host "::error::expected the installer to refuse a version that was never published"
+            exit 1
+          } catch {
+            if ($_.Exception.Message -notmatch 'is published at version 0\.0\.1') { Write-Host "::error::threw for the wrong reason: $($_.Exception.Message)"; exit 1 }
+            Write-Host "refused as expected: $($_.Exception.Message)"
+          }
 
   e2e:
     name: E2E verify · published package (nuget)
     runs-on: ubuntu-latest
     # Real proof against the live artifact: dnx-launch a published server and
-    # complete the MCP handshake + a document toolcall via the auto level.
+    # complete the MCP handshake, the license check, and a document toolcall via
+    # the auto level.
+    env:
+      # Optional. When these repository/org secrets exist, a second step proves
+      # metered licensing engages end to end; without them it is skipped.
+      GROUPDOCS_METERED_PUBLIC_KEY: ${{ secrets.GROUPDOCS_METERED_PUBLIC_KEY }}
+      GROUPDOCS_METERED_PRIVATE_KEY: ${{ secrets.GROUPDOCS_METERED_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
-      - name: Verify metadata end-to-end
+      - name: Prepare sample storage (generated PDF)
         shell: pwsh
         run: |
+          # A real format, generated inline so the repo carries no binary. This used
+          # to be a .txt file, which GroupDocs.Metadata does not support - its
+          # get_document_info fails on it, and this job was red every night.
           New-Item -ItemType Directory -Force sample-storage | Out-Null
-          Set-Content sample-storage/sample.txt 'GroupDocs MCP installer CI sample document.'
+          $objs = @('<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>')
+          $sb = [System.Text.StringBuilder]::new(); [void]$sb.Append("%PDF-1.4`n"); $offsets = @()
+          for ($i = 0; $i -lt $objs.Count; $i++) { $offsets += $sb.Length; [void]$sb.Append("$($i + 1) 0 obj`n$($objs[$i])`nendobj`n") }
+          $xref = $sb.Length
+          [void]$sb.Append("xref`n0 $($objs.Count + 1)`n0000000000 65535 f `n")
+          foreach ($o in $offsets) { [void]$sb.Append(('{0:D10} 00000 n ' -f $o) + "`n") }
+          [void]$sb.Append("trailer`n<< /Size $($objs.Count + 1) /Root 1 0 R >>`nstartxref`n$xref`n%%EOF`n")
+          [IO.File]::WriteAllText("$PWD/sample-storage/sample.pdf", $sb.ToString(), [System.Text.ASCIIEncoding]::new())
           $cfg = [ordered]@{
-            channel = 'nuget'; clients = @(); products = @('metadata')
+            platform = 'net'; channel = 'nuget'; clients = @(); products = @('metadata')
             storagePath = (Join-Path (Get-Location) 'sample-storage')
           } | ConvertTo-Json
           [IO.File]::WriteAllText("$PWD/ci.config.json", $cfg)
-          ./verify-groupdocs-mcp.ps1 -Config ./ci.config.json -TimeoutSec 240
+      - name: Verify metadata end-to-end (evaluation mode)
+        shell: pwsh
+        env:
+          GROUPDOCS_METERED_PUBLIC_KEY: ""
+          GROUPDOCS_METERED_PRIVATE_KEY: ""
+        run: ./verify-groupdocs-mcp.ps1 -Config ./ci.config.json -TimeoutSec 240
+      - name: Verify metadata end-to-end (metered licensing)
+        if: env.GROUPDOCS_METERED_PUBLIC_KEY != '' && env.GROUPDOCS_METERED_PRIVATE_KEY != ''
+        shell: pwsh
+        run: ./verify-groupdocs-mcp.ps1 -Config ./ci.config.json -Metered -TimeoutSec 240
