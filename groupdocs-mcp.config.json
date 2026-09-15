@@ -1,14 +1,18 @@
 {
-    "channel":  "docker",
-    "registry":  "ghcr",
-    "clients":  [
-                    "cursor"
-                ],
-    "version":  "latest",
-    "storagePath":  "d:\\Storage\\Documents\\",
-    "outputPath":  "d:\\Storage\\Output\\",
-    "licensePath":  "d:\\Storage\\Licenses\\Conholdate.Total.lic",
-    "products":  [
-                     "parser"
-                 ]
+  "platform": "net",
+  "channel": "docker",
+  "registry": "ghcr",
+  "clients": [
+    "claude-desktop"
+  ],
+  "version": "latest",
+  "storagePath": "C:/GroupDocs/Documents",
+  "outputPath": "",
+  "licensePath": "",
+  "metered": false,
+  "products": [
+    "metadata",
+    "conversion",
+    "comparison"
+  ]
 }
