@@ -18,18 +18,21 @@
 
   Unlike the installer's -Uninstall (which only touches the clients listed in
   groupdocs-mcp.config.json), this script defaults to ALL clients - catching
-  entries left behind after the config changed.
+  entries left behind after the config changed. -Platform likewise defaults to
+  'all' available platforms, so servers registered for any platform are found.
 
 .EXAMPLE
   ./uninstall-groupdocs-mcp.ps1 -DryRun                  # preview a full sweep
   ./uninstall-groupdocs-mcp.ps1                          # remove every GroupDocs server from every client
   ./uninstall-groupdocs-mcp.ps1 -Products metadata,conversion
   ./uninstall-groupdocs-mcp.ps1 -Clients claude-desktop,cursor
+  ./uninstall-groupdocs-mcp.ps1 -Platform net
   ./uninstall-groupdocs-mcp.ps1 -RemoveImages -PurgeNugetCache -RemoveCompose
 #>
 [CmdletBinding()]
 param(
   [string]   $Manifest = (Join-Path $PSScriptRoot 'manifest.json'),
+  [string]   $Platform = 'all',
   [string[]] $Products = @('all'),
   [string[]] $Clients  = @('all'),
   [ValidateSet('ghcr','dockerhub')]
@@ -42,6 +45,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/platform.ps1')
 
 $FILE_CLIENTS = @('claude-desktop','vscode','vscode-workspace','vs2022','cursor','windsurf','cline')
 $CLI_CLIENTS  = @('claude-code','codex')
@@ -79,7 +83,20 @@ foreach ($p in $Products) {
   else { Write-Warn2 "Unknown product '$p' - skipped. Known: $($allKeys -join ', ')" }
 }
 if ($prodKeys.Count -eq 0) { throw "No valid products selected. Nothing to do." }
-$serverNames = @($prodKeys | ForEach-Object { $mani.products.$_.server })
+
+# Removal must find what any earlier install wrote, so 'all' covers every
+# available platform. Planned platforms have no naming yet - nothing to find.
+$platformKeys = if ("$Platform".Trim().ToLower() -eq 'all') { @(Get-AvailablePlatformKeys $mani) }
+                else { [void](Resolve-Platform $mani $Platform); @("$Platform".Trim().ToLower()) }
+$serverNames = New-Object System.Collections.Generic.List[string]
+foreach ($pf in $platformKeys) {
+  foreach ($k in $prodKeys) {
+    if (-not (Test-ProductOnPlatform $mani $pf $k)) { continue }
+    $n = Get-ProductName $mani $pf $k 'server'
+    if (-not $serverNames.Contains($n)) { $serverNames.Add($n) }
+  }
+}
+$serverNames = $serverNames.ToArray()
 
 $clientList = New-Object System.Collections.Generic.List[string]
 foreach ($c in $Clients) {
@@ -94,6 +111,7 @@ foreach ($c in $Clients) {
 }
 
 Write-Head "GroupDocs MCP uninstall"
+Write-Info "platform: $($platformKeys -join ', ')"
 Write-Info "products: $($prodKeys -join ', ')"
 Write-Info "servers : $($serverNames -join ', ')"
 Write-Info "clients : $($clientList -join ', ')"
@@ -187,20 +205,24 @@ if ($RemoveImages) {
   Write-Head "Removing Docker images"
   if (-not (Test-CommandExists 'docker')) { Write-Warn2 "'docker' not found on PATH - skipping image removal." }
   else {
-    $tag = if ([string]::IsNullOrWhiteSpace($Version)) { 'latest' } else { $Version }
-    foreach ($k in $prodKeys) {
-      $img = if ($Registry -eq 'dockerhub') { "groupdocs/$k-net-mcp:$tag" } else { "ghcr.io/groupdocs-$k/$k-net-mcp:$tag" }
-      Write-Info "docker rmi $img"
-      if (-not $DryRun) { & docker rmi $img 2>$null | Out-Null }
+    foreach ($pf in $platformKeys) {
+      foreach ($k in $prodKeys) {
+        if (-not (Test-ProductOnPlatform $mani $pf $k)) { continue }
+        $img = Get-ImageRef $mani $pf $k $Registry $Version
+        Write-Info "docker rmi $img"
+        if (-not $DryRun) { & docker rmi $img 2>$null | Out-Null }
+      }
     }
   }
 }
 
+# The NuGet cache is a .NET (net platform) artifact only.
 if ($PurgeNugetCache) {
   Write-Head "Purging NuGet package cache (dnx re-downloads on next use)"
   $nugetRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $HOME '.nuget/packages' }
   foreach ($k in $prodKeys) {
-    $pkgDir = Join-Path $nugetRoot ($mani.products.$k.nuget.ToLower())
+    if ($platformKeys -notcontains 'net' -or -not (Test-ProductOnPlatform $mani 'net' $k)) { continue }
+    $pkgDir = Join-Path $nugetRoot ((Get-ProductName $mani 'net' $k 'package').ToLower())
     if (Test-Path $pkgDir) {
       if ($DryRun) { Write-Info "(dry-run) would delete $pkgDir" }
       else { Remove-Item -LiteralPath $pkgDir -Recurse -Force; Write-Ok "purged $pkgDir" }
