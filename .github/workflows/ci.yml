@@ -127,10 +127,16 @@ jobs:
           # 0.0.1 will never be published, so this stays deterministic as real
           # versions ship. Needs network; the registry being down is a warning,
           # not a refusal - skip the assertion in that case rather than go red.
-          . ./lib/platform.ps1
-          if (-not (Get-RegistryIndex).ok) { Write-Host "::warning::MCP Registry unreachable - assertion skipped"; exit 0 }
+          # The skip keys off the installer's OWN lookup: a separate reachability
+          # probe beforehand can succeed while the installer's request, moments
+          # later, times out (seen 2026-09-15) - a false failure.
+          $log = Join-Path $env:RUNNER_TEMP 'pin-check.log'
           try {
-            ./install-groupdocs-mcp.ps1 -Products metadata -Version 0.0.1 -Clients vscode-workspace -DryRun -SkipPreflight
+            ./install-groupdocs-mcp.ps1 -Products metadata -Version 0.0.1 -Clients vscode-workspace -DryRun -SkipPreflight *>&1 | Tee-Object -FilePath $log
+            if ((Get-Content -Raw $log) -match 'MCP Registry unreachable') {
+              Write-Host "::warning::MCP Registry unreachable from the installer - assertion skipped"
+              exit 0
+            }
             Write-Host "::error::expected the installer to refuse a version that was never published"
             exit 1
           } catch {
