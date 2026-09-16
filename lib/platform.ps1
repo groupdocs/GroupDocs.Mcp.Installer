@@ -202,27 +202,36 @@ function Get-MeteredConfigState {
 # One paged query for every GroupDocs entry, not one per product: a fleet install
 # should cost one round trip, and an offline machine should fail once, fast.
 # Returns @{ ok; error; entries } - never throws.
-function Get-RegistryIndex ([string]$search = 'groupdocs', [int]$timeoutSec = 20) {
+# 45 s per attempt with one retry. 20 s was observed to time out on a GitHub ubuntu
+# runner (2026-09-15) while a request seconds earlier had succeeded: the registry's
+# search response time varies, and a single slow response should not cost a check.
+function Get-RegistryIndex ([string]$search = 'groupdocs', [int]$timeoutSec = 45, [int]$attempts = 2) {
   try {
     # PS 5.1 on older .NET defaults to TLS 1.0, which the registry rejects.
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
   } catch {}
-  $entries = New-Object System.Collections.Generic.List[object]
-  $cursor = $null
-  try {
-    for ($page = 0; $page -lt 10; $page++) {
-      $url = "$($script:REGISTRY_BASE)?search=$([uri]::EscapeDataString($search))&limit=100"
-      if ($cursor) { $url += "&cursor=$([uri]::EscapeDataString($cursor))" }
-      $resp = Invoke-RestMethod -Uri $url -TimeoutSec $timeoutSec -UseBasicParsing -ErrorAction Stop
-      foreach ($e in @($resp.servers)) { $entries.Add($e) }
-      $cursor = $null
-      if ($resp.metadata -and ($resp.metadata.PSObject.Properties.Name -contains 'nextCursor')) { $cursor = $resp.metadata.nextCursor }
-      if (-not $cursor) { break }
+  $lastError = $null
+  for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+    # Restart paging from scratch on a retry - a half-read index is worse than none.
+    $entries = New-Object System.Collections.Generic.List[object]
+    $cursor = $null
+    try {
+      for ($page = 0; $page -lt 10; $page++) {
+        $url = "$($script:REGISTRY_BASE)?search=$([uri]::EscapeDataString($search))&limit=100"
+        if ($cursor) { $url += "&cursor=$([uri]::EscapeDataString($cursor))" }
+        $resp = Invoke-RestMethod -Uri $url -TimeoutSec $timeoutSec -UseBasicParsing -ErrorAction Stop
+        foreach ($e in @($resp.servers)) { $entries.Add($e) }
+        $cursor = $null
+        if ($resp.metadata -and ($resp.metadata.PSObject.Properties.Name -contains 'nextCursor')) { $cursor = $resp.metadata.nextCursor }
+        if (-not $cursor) { break }
+      }
+      return @{ ok = $true; error = $null; entries = $entries.ToArray() }
+    } catch {
+      $lastError = $_.Exception.Message
+      if ($attempt -lt $attempts) { Start-Sleep -Seconds 2 }
     }
-    return @{ ok = $true; error = $null; entries = $entries.ToArray() }
-  } catch {
-    return @{ ok = $false; error = $_.Exception.Message; entries = @() }
   }
+  return @{ ok = $false; error = "$lastError (after $attempts attempts)"; entries = @() }
 }
 
 function ConvertTo-VersionKey ([string]$v) {
