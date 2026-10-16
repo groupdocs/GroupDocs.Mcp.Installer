@@ -13,6 +13,8 @@
                  a sample document is available, invokes it against that
                  document. The sample is "verify.sampleFile" when set and
                  present - otherwise the FIRST document found in storagePath.
+                 Search has no per-document info tool: its get_index_info is
+                 called instead - it needs no sample and writes nothing.
                  No sample / no info tool degrades gracefully to handshake-only.
 
     handshake  - the universal minimum. Spawns each server, asserts it starts
@@ -101,6 +103,19 @@ function Get-SampleFile {
   return $null
 }
 $sampleName = Get-SampleFile
+
+# Linux host: run the container as the current user, exactly as the installer writes the
+# entry (the images run as uid 1654; a bind mount keeps its host owner). Same rule as
+# Get-DockerUserArgs in install-groupdocs-mcp.ps1 - keep the two in step.
+function Get-DockerUserArgs {
+  if ($PSVersionTable.PSVersion.Major -lt 6 -or -not $IsLinux) { return @() }
+  try {
+    $uid = ("" + (& id -u 2>$null)).Trim()
+    $gid = ("" + (& id -g 2>$null)).Trim()
+  } catch { return @() }
+  if ($uid -match '^\d+$' -and $gid -match '^\d+$') { return @('--user', "$uid`:$gid") }
+  return @()
+}
 if ($level -eq 'auto') {
   if ($sampleName) { Write-Info "sample document: $sampleName (from $storagePath)" }
   else { Write-Info "no sample document found in $storagePath - auto level will do handshake-only" }
@@ -167,6 +182,7 @@ function Get-Launch ($key) {
     $img = Get-ImageRef $mani $platformKey $key $registry $version
     $a = [System.Collections.Generic.List[string]]::new()
     @('run','--rm','-i') | ForEach-Object { $a.Add($_) }
+    foreach ($u in (Get-DockerUserArgs)) { $a.Add($u) }
     $a.Add('-v'); $a.Add("$(ConvertTo-DockerHostPath $storagePath)`:/data")
     $a.Add('-e'); $a.Add('GROUPDOCS_MCP_STORAGE_PATH=/data')
     if ($outputPath -ne '') { $a.Add('-v'); $a.Add("$(ConvertTo-DockerHostPath $outputPath)`:/data/output"); $a.Add('-e'); $a.Add('GROUPDOCS_MCP_OUTPUT_PATH=/data/output') }
@@ -289,7 +305,9 @@ foreach ($k in $resolved) {
   #    get_view_info instead. Both take Mcp.Core's FileInput shape.
   $script:autoTool = $null
   $script:licenseAsked = $false
-  $script:wantAutoPick = ($level -eq 'auto' -and -not $caseTool -and $sampleName)
+  # A sample is needed for the per-document info tools; Search's get_index_info needs none.
+  $script:wantAutoPick = ($level -eq 'auto' -and -not $caseTool)
+  $script:autoOnSample = $false
   $onList = $null
   if ($level -ne 'handshake') {
     $onList = {
@@ -297,13 +315,20 @@ foreach ($k in $resolved) {
       $tnames = @($listResp.result.tools | ForEach-Object { $_.name })
       $extra = @()
       if ($script:wantAutoPick) {
-        $pick = $null
-        if     ($tnames -contains 'get_document_info') { $pick = 'get_document_info' }
-        elseif ($tnames -contains 'get_view_info')     { $pick = 'get_view_info' }
+        $pick = $null; $toolArgs = $null
+        if ($script:sampleName -and ($tnames -contains 'get_document_info')) { $pick = 'get_document_info' }
+        elseif ($script:sampleName -and ($tnames -contains 'get_view_info')) { $pick = 'get_view_info' }
+        if ($pick) {
+          $toolArgs = ('{"file":{"filePath":"' + $script:sampleName + '"}}')
+          $script:autoOnSample = $true
+        } elseif ($tnames -contains 'get_index_info') {
+          # GroupDocs.Search: read-only, sample-free; reports the default index (or that it
+          # does not exist yet - an answer, not an error).
+          $pick = 'get_index_info'; $toolArgs = '{}'
+        }
         if ($pick) {
           $script:autoTool = $pick
-          $fileArg = ('{"file":{"filePath":"' + $script:sampleName + '"}}')
-          $extra += @{ line = ('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"' + $pick + '","arguments":' + $fileArg + '}}'); waitId = 3 }
+          $extra += @{ line = ('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"' + $pick + '","arguments":' + $toolArgs + '}}'); waitId = 3 }
         }
       }
       if ($tnames -contains $script:LICENSE_TOOL) {
@@ -371,9 +396,9 @@ foreach ($k in $resolved) {
     $tcStatus = 'no-case'; Write-Info "toolcall: no case defined for '$k' in verify.cases - skipped"
   } elseif ($level -eq 'auto' -and -not $ranTool) {
     if (-not $sampleName) { $tcStatus = 'no-sample'; Write-Info "toolcall: no sample document in $storagePath - handshake only" }
-    else { $tcStatus = 'no-info-tool'; Write-Info "toolcall: '$k' exposes no get_document_info / get_view_info - handshake only" }
+    else { $tcStatus = 'no-info-tool'; Write-Info "toolcall: '$k' exposes no get_document_info / get_view_info / get_index_info - handshake only" }
   } elseif ($ranTool) {
-    $onFile = if ($caseTool) { '' } else { " on '$sampleName'" }
+    $onFile = if ($caseTool -or -not $script:autoOnSample) { '' } else { " on '$sampleName'" }
     $callResp = $sess.objects | Where-Object { $_.id -eq 3 } | Select-Object -First 1
     $callText = ''
     if ($callResp -and $callResp.result -and $callResp.result.content) {

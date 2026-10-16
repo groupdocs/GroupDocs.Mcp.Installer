@@ -1,6 +1,6 @@
 # GroupDocs MCP Installer
 
-Cross-platform PowerShell installer, verifier, and uninstaller for the GroupDocs MCP server family (Annotation, Comparison, Conversion, Markdown, Merger, Metadata, Parser, Redaction, Signature, Total, Viewer, Watermark). Registers the servers into AI clients — Claude Desktop, Claude Code, VS Code / GitHub Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file or a guided wizard, then verifies each server over a real MCP JSON-RPC session.
+Cross-platform PowerShell installer, verifier, and uninstaller for the GroupDocs MCP server family (Annotation, Comparison, Conversion, Markdown, Merger, Metadata, Parser, Redaction, Search, Signature, Total, Viewer, Watermark). Registers the servers into AI clients — Claude Desktop, Claude Code, VS Code / GitHub Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file or a guided wizard, then verifies each server over a real MCP JSON-RPC session.
 
 ## Install
 
@@ -8,7 +8,7 @@ Cross-platform PowerShell installer, verifier, and uninstaller for the GroupDocs
 - Preview without changing anything: `./install-groupdocs-mcp.ps1 -DryRun`
 - Apply + warm caches + verify in one command: `./install-groupdocs-mcp.ps1 -Verify`
 - Platform: `-Platform net` (.NET, the default and the only one available today; java, python, node are planned and refused until they ship).
-- Channels for net: `docker` (self-contained images from ghcr.io/groupdocs-<product>/<product>-net-mcp, recommended) or `nuget` (`dnx GroupDocs.<Product>.Mcp --yes`, needs .NET 10 SDK). Parser and Total are docker-only (packed tool exceeds NuGet.org's 250 MB limit).
+- Channels for net: `docker` (self-contained images from ghcr.io/groupdocs-<product>/<product>-net-mcp, recommended) or `nuget` (`dnx GroupDocs.<Product>.Mcp --yes`, needs .NET 10 SDK). Parser, Search and Total are docker-only (packed tool exceeds NuGet.org's 250 MB limit). On Linux hosts docker entries get --user <uid>:<gid> so the container can write into the mounted folders.
 - Versions: `latest` by default; a pin such as `-Version 26.9.0` is checked per product against the MCP Registry before anything is written, and a product never published at that version is skipped with the reason.
 
 ## Licensing

@@ -129,6 +129,16 @@ function Get-ProductName ($mani, $platformKey, $key, [string]$kind) {
 
 # Oversized packages cannot be published to the platform package registry
 # (NuGet.org caps packages at 250 MB). Schema 1 recorded this as nugetBlocked.
+# Whether the GroupDocs.Total bundle contains this product. Total aggregates the family's
+# engines but not every product (GroupDocs.Search is separate), so 'total' plus such a
+# product is not a duplicate. Missing field = bundled (true).
+function Test-BundledInTotal ($mani, $key) {
+  $p = $mani.products.$key
+  if ($null -eq $p) { return $false }
+  if ($p.PSObject.Properties.Name -contains 'inTotal') { return [bool]$p.inTotal }
+  return $true
+}
+
 function Test-PackageBlocked ($mani, $platformKey, $key) {
   $ov = Get-ProductOverride $mani $platformKey $key 'packageBlocked'
   if ($null -ne $ov) { return [bool]$ov }

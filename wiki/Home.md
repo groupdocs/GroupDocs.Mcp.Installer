@@ -1,6 +1,6 @@
 # GroupDocs MCP Installer
 
-Set up any GroupDocs MCP server (Metadata, Conversion, Parser, Signature, Total, … 12 products) in your local AI tool — Claude Desktop, Claude Code, VS Code / Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file, a wizard, or a single command line. Then verify it actually works with a real MCP call.
+Set up any GroupDocs MCP server (Metadata, Conversion, Parser, Search, Signature, Total, … 13 products) in your local AI tool — Claude Desktop, Claude Code, VS Code / Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file, a wizard, or a single command line. Then verify it actually works with a real MCP call.
 
 Repo: **https://github.com/groupdocs/GroupDocs.Mcp.Installer**
 
@@ -87,7 +87,7 @@ Useful switches: `-Verify` (prewarm caches + run verification after install), `-
 |---|---|---|
 | Needs | Docker only | .NET 10 SDK (+ libgdiplus on macOS/Linux) |
 | Native deps | in the image (amd64 + arm64) | yours to install (`setup/` does it) |
-| Parser / Total | ✅ | ⛔ >250 MB — auto-refused with explanation |
+| Parser / Search / Total | ✅ | ⛔ >250 MB — auto-refused with explanation |
 
 ### Clients
 

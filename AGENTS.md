@@ -6,7 +6,7 @@ working in this repository.
 ## What this repo is
 
 A **cross-platform PowerShell installer/verifier** for the GroupDocs MCP server family
-(12 products). It registers servers into AI clients (Claude Desktop, Claude Code,
+(13 products). It registers servers into AI clients (Claude Desktop, Claude Code,
 VS Code, VS 2022, Cursor, Windsurf, Cline, Codex CLI), verifies them over a real MCP
 JSON-RPC stdio session, and removes them cleanly. No build step — plain `.ps1` scripts.
 
@@ -97,10 +97,18 @@ mkdir /tmp/sand; cd /tmp/sand
 
 ## Product facts the code depends on
 
-- Parser and Total are `nugetBlocked` (packed tool > NuGet.org's 250 MB limit) —
+- Parser, Search and Total are `nugetBlocked` (packed tool > NuGet.org's 250 MB limit) —
   Docker/GHCR only. The installer must refuse them on the nuget channel.
 - `get_document_info` exists on most products; Viewer exposes `get_view_info` instead;
-  a few products expose neither — `auto` verification degrades to handshake-only.
+  Search exposes neither and `auto` calls its `get_index_info` (no sample, read-only).
+  Products with none of the three degrade to handshake-only.
+- **Total does not bundle every product.** `inTotal: false` in the manifest marks one it
+  lacks (Search); `Test-BundledInTotal` keeps `total` + that product from being called
+  redundant. `"all"` still means every individual product except `total`.
+- **Docker on a Linux host needs `--user`.** The images run as uid 1654 and a bind mount
+  keeps its host owner, so writes into `/data` fail without it. `Get-DockerUserArgs`
+  (install AND verify script - keep them in step) adds `--user <uid>:<gid>` on Linux only,
+  resolved at install time because client configs run no shell; Compose gets `user:`.
 - **`get_license_status`** ships in GroupDocs.Mcp.Core 26.9.0 on every server: JSON
   `{ mode, licensed, source, consumption, server, engine, note }`, `mode` one of
   `evaluation` / `licensed` / `metered`. Pre-26.9.0 servers lack it — report `n/a`, never fail.

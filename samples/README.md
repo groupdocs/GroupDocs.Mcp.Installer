@@ -29,7 +29,7 @@ Notes:
 
 - Every sample sets `"platform": "net"` — .NET, the only platform available today and the
   default when the key is absent.
-- **Parser and Total are docker-only** (the packed tool exceeds NuGet.org's 250 MB
+- **Parser, Search and Total are docker-only** (the packed tool exceeds NuGet.org's 250 MB
   limit) — the installer refuses them on the nuget channel with an explanation.
 - `licensePath: ""` runs in **evaluation mode** (safe); point it at your
   `.lic` file to lift the limits. Any GroupDocs license file name works

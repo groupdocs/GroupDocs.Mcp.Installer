@@ -106,7 +106,8 @@ and never contain a value. The installer reports whether each key is `set (N cha
 
 - `products` is **always an explicit list**. Use `"all"` to expand to every
   individual product on the chosen platform (Total is excluded — it is the bundle
-  equivalent). List `"total"` alone to get the all-in-one server.
+  equivalent). List `"total"` alone to get the all-in-one server. Total does not contain
+  GroupDocs.Search; `"total"` + `"search"` is a valid pair, not a duplicate.
 - Any CLI switch overrides the config file:
   `-Platform`, `-Channel`, `-Registry`, `-Products`, `-Clients`, `-Version`, `-Metered`.
 
@@ -162,7 +163,7 @@ Channels are defined per platform in `manifest.json`. For `net`:
 |---|---|---|
 | Prereqs | Docker only | .NET 10 SDK (+ `libgdiplus`/`libfontconfig1` on Linux/macOS) |
 | Native deps | bundled in image | you install them |
-| Total / Parser | ✅ supported | ⛔ NuGet-blocked (>250 MB) — auto-skipped |
+| Total / Parser / Search | ✅ supported | ⛔ NuGet-blocked (>250 MB) — auto-skipped |
 | Entry written | `docker run … <image>` | `dnx <pkg> --yes` + env |
 | Metered keys | `-e NAME` pass-through | inherited from the client |
 
@@ -274,9 +275,12 @@ docker compose up
 ## Delivery-channel notes (why this design)
 
 - **NuGet (`dnx`)** — zero pre-install, auto-pulls; needs .NET 10 SDK and native
-  graphics libs on Linux/macOS. Total/Parser exceed NuGet's 250 MB cap.
+  graphics libs on Linux/macOS. Total/Parser/Search exceed NuGet's 250 MB cap.
 - **Docker (GHCR / Docker Hub)** — self-contained, native deps bundled; the
-  "just works" cross-platform path and the primary channel here.
+  "just works" cross-platform path and the primary channel here. On a **Linux** host the
+  installer adds `--user <uid>:<gid>` (your `id -u`:`id -g`) to every Docker entry and
+  `user:` to the Compose file: the images run as a non-root user, and without it they
+  cannot write into a folder you own (a Search index, extracted images, converted files).
 - **GitHub Copilot / VS Code / Cursor / Windsurf / Cline** — *clients*
   (registration targets), not runtimes; they still run dnx or docker underneath.
 - **MCP Registry** (`io.github.groupdocs-*/…`) — the version index the installer checks

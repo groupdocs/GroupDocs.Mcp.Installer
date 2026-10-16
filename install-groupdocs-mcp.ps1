@@ -95,6 +95,22 @@ function Test-IsMac {
   return $false
 }
 
+# Docker on a Linux host: the GroupDocs images run as a non-root user (uid 1654) and a bind
+# mount keeps its host owner, so a folder the user owns is read-only inside the container -
+# every write into /data or /data/output fails with "Permission denied" (a Search index,
+# extracted images, converted files). Running the container as the installing user fixes it.
+# Client configs are JSON with no shell, so the numbers are resolved here, at install time.
+# Docker Desktop on Windows and macOS does not enforce bind-mount ownership: nothing to add.
+function Get-DockerUserArgs {
+  if ($PSVersionTable.PSVersion.Major -lt 6 -or -not $IsLinux) { return @() }
+  try {
+    $uid = ("" + (& id -u 2>$null)).Trim()
+    $gid = ("" + (& id -g 2>$null)).Trim()
+  } catch { return @() }
+  if ($uid -match '^\d+$' -and $gid -match '^\d+$') { return @('--user', "$uid`:$gid") }
+  return @()
+}
+
 function Test-CommandExists ([string]$name) {
   return [bool](Get-Command $name -ErrorAction SilentlyContinue)
 }
@@ -126,7 +142,7 @@ function Invoke-Wizard {
 
   $pfProducts = @($allKeys | Where-Object { Test-ProductOnPlatform $mani $pfKey $_ } | Sort-Object)
   Write-Host "  Products: $($pfProducts -join ', ')"
-  Write-Host "  ('all' = every individual product; 'total' alone = the all-in-one bundle)"
+  Write-Host "  ('all' = every individual product; 'total' alone = the bundle of the products it contains - search is separate)"
   $pAns = Read-Host "  Which products? (comma-separated) [all]"
   if ([string]::IsNullOrWhiteSpace($pAns)) { $pAns = 'all' }
 
@@ -328,8 +344,11 @@ foreach ($p in $requested) {
   }
 }
 if ($resolved.Count -eq 0) { throw "No valid products resolved from config. Nothing to do." }
-if ($resolved.Contains('total') -and $resolved.Count -gt 1) {
-  Write-Warn2 "'total' bundles every product; the individual servers you also listed are redundant (duplicate tools)."
+if ($resolved.Contains('total')) {
+  $redundant = @($resolved | Where-Object { $_ -ne 'total' -and (Test-BundledInTotal $mani $_) })
+  if ($redundant.Count -gt 0) {
+    Write-Warn2 "'total' already bundles $($redundant -join ', '); those individual servers are redundant (duplicate tools)."
+  }
 }
 
 # The package channel can't serve bundles over the package registry's size limit.
@@ -397,6 +416,7 @@ function New-DockerEntry ($key) {
   $sp = ConvertTo-DockerHostPath $storagePath
   $dargs = [System.Collections.Generic.List[string]]::new()
   @('run','--rm','-i') | ForEach-Object { $dargs.Add($_) }
+  foreach ($u in (Get-DockerUserArgs)) { $dargs.Add($u) }
   $dargs.Add('-v'); $dargs.Add("$sp`:/data")
   $dargs.Add('-e'); $dargs.Add('GROUPDOCS_MCP_STORAGE_PATH=/data')
   if ($outputPath -ne '') {
@@ -564,6 +584,8 @@ function Write-Compose {
     $sp = ConvertTo-DockerHostPath $storagePath
     $lines.Add("  $name`:")
     $lines.Add("    image: $image")
+    $dockerUser = @(Get-DockerUserArgs)
+    if ($dockerUser.Count -eq 2) { $lines.Add("    user: `"$($dockerUser[1])`"") }
     $lines.Add('    volumes:')
     $lines.Add("      - `"$sp`:/data`"")
     if ($outputPath  -ne '') { $lines.Add("      - `"$(ConvertTo-DockerHostPath $outputPath)`:/data/output`"") }
