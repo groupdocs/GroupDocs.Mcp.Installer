@@ -1,6 +1,6 @@
 # GroupDocs MCP Installer
 
-Set up any GroupDocs MCP server (Metadata, Conversion, Parser, Search, Signature, Total, … 13 products) in your local AI tool — Claude Desktop, Claude Code, VS Code / Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file, a wizard, or a single command line. Then verify it actually works with a real MCP call.
+Set up any GroupDocs MCP server (Metadata, Conversion, Parser, Search, Editor, Assembly, Signature, Total, … 15 products) in your local AI tool — Claude Desktop, Claude Code, VS Code / Copilot, Visual Studio 2022, Cursor, Windsurf, Cline, Codex CLI — from one config file, a wizard, or a single command line. Then verify it actually works with a real MCP call.
 
 Repo: **https://github.com/groupdocs/GroupDocs.Mcp.Installer**
 
@@ -87,7 +87,8 @@ Useful switches: `-Verify` (prewarm caches + run verification after install), `-
 |---|---|---|
 | Needs | Docker only | .NET 10 SDK (+ libgdiplus on macOS/Linux) |
 | Native deps | in the image (amd64 + arm64) | yours to install (`setup/` does it) |
-| Parser / Search / Total | ✅ | ⛔ >250 MB — auto-refused with explanation |
+| Search / Total | ✅ | ⛔ >250 MB — auto-refused with explanation |
+| Parser | ✅ | ✅ from 26.11.0 (one package per platform); older versions auto-refused |
 
 ### Clients
 
@@ -129,6 +130,8 @@ Restart the AI client after install, then just ask:
 - *remove all metadata from sample.docx*
 - *extract all tables from b.pdf*
 - *add watermark to sample.pdf*
+- *replace "ACME Corp" with "Globex" in contract.docx and keep the formatting*
+- *fill invoice-template.docx with this order and save it as a PDF*
 - *compare v1.docx and v2.docx and summarize the changes*
 - *what signatures does contract.pdf contain?*
 

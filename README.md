@@ -93,7 +93,7 @@ and never contain a value. The installer reports whether each key is `set (N cha
 {
   "platform":    "net",             // net (default) | java, python, node - planned
   "channel":     "docker",          // per platform - net: docker | nuget
-  "registry":    "ghcr",            // ghcr | dockerhub  (docker channel only)
+  "registry":    "ghcr",            // ghcr | dockerhub  (docker channel only; Parser and Total are GHCR-only and fall back to it)
   "clients":     ["claude-desktop", "vscode"],
   "version":     "latest",          // "latest" or a pin e.g. "26.9.0" - checked against the MCP Registry
   "storagePath": "C:/docs",         // shared documents folder (created if missing)
@@ -107,7 +107,11 @@ and never contain a value. The installer reports whether each key is `set (N cha
 - `products` is **always an explicit list**. Use `"all"` to expand to every
   individual product on the chosen platform (Total is excluded — it is the bundle
   equivalent). List `"total"` alone to get the all-in-one server. Total does not contain
-  GroupDocs.Search; `"total"` + `"search"` is a valid pair, not a duplicate.
+  GroupDocs.Search, GroupDocs.Editor or GroupDocs.Assembly; `"total"` + any of them is a valid
+  pair, not a duplicate.
+- A product with **no MCP Registry entry yet** (listed in the manifest ahead of its first
+  release - Assembly today) is skipped with the reason, so `"all"` never writes an entry that
+  fails at first launch. `-SkipRegistryCheck` writes it anyway.
 - Any CLI switch overrides the config file:
   `-Platform`, `-Channel`, `-Registry`, `-Products`, `-Clients`, `-Version`, `-Metered`.
 
@@ -163,7 +167,8 @@ Channels are defined per platform in `manifest.json`. For `net`:
 |---|---|---|
 | Prereqs | Docker only | .NET 10 SDK (+ `libgdiplus`/`libfontconfig1` on Linux/macOS) |
 | Native deps | bundled in image | you install them |
-| Total / Parser / Search | ✅ supported | ⛔ NuGet-blocked (>250 MB) — auto-skipped |
+| Total / Search | ✅ supported | ⛔ NuGet-blocked (>250 MB) — auto-skipped |
+| Parser | ✅ supported | ✅ from 26.11.0 (one package per platform); older pins and a `latest` that is still older are auto-skipped |
 | Entry written | `docker run … <image>` | `dnx <pkg> --yes` + env |
 | Metered keys | `-e NAME` pass-through | inherited from the client |
 
@@ -275,7 +280,8 @@ docker compose up
 ## Delivery-channel notes (why this design)
 
 - **NuGet (`dnx`)** — zero pre-install, auto-pulls; needs .NET 10 SDK and native
-  graphics libs on Linux/macOS. Total/Parser/Search exceed NuGet's 250 MB cap.
+  graphics libs on Linux/macOS. Total/Search exceed NuGet's 250 MB cap; Parser fits from
+  26.11.0 as per-platform packages (`dnx` picks the right one; first launch downloads ~230 MB).
 - **Docker (GHCR / Docker Hub)** — self-contained, native deps bundled; the
   "just works" cross-platform path and the primary channel here. On a **Linux** host the
   installer adds `--user <uid>:<gid>` (your `id -u`:`id -g`) to every Docker entry and

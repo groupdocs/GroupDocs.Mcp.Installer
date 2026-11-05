@@ -6,7 +6,7 @@ working in this repository.
 ## What this repo is
 
 A **cross-platform PowerShell installer/verifier** for the GroupDocs MCP server family
-(13 products). It registers servers into AI clients (Claude Desktop, Claude Code,
+(15 products). It registers servers into AI clients (Claude Desktop, Claude Code,
 VS Code, VS 2022, Cursor, Windsurf, Cline, Codex CLI), verifies them over a real MCP
 JSON-RPC stdio session, and removes them cleanly. No build step — plain `.ps1` scripts.
 
@@ -97,8 +97,15 @@ mkdir /tmp/sand; cd /tmp/sand
 
 ## Product facts the code depends on
 
-- Parser, Search and Total are `nugetBlocked` (packed tool > NuGet.org's 250 MB limit) —
+- Search and Total are `nugetBlocked` (packed tool > NuGet.org's 250 MB limit) —
   Docker/GHCR only. The installer must refuse them on the nuget channel.
+- Parser has `nugetSince: "26.11.0"`: on NuGet from that version (one package per platform).
+  The nuget channel refuses older pins, and for `latest` it refuses until the MCP Registry
+  lists 26.11.0 or later - so it unblocks without an installer release.
+- Parser and Total have `dockerHub: false` (GHCR only); `Get-ImageRef` falls back to GHCR.
+- Search, Editor and Assembly have `inTotal: false` - Total does not bundle them.
+- A product missing from a reachable MCP Registry (Assembly until its first release) is
+  skipped on install; `-SkipRegistryCheck` overrides.
 - `get_document_info` exists on most products; Viewer exposes `get_view_info` instead;
   Search exposes neither and `auto` calls its `get_index_info` (no sample, read-only).
   Products with none of the three degrade to handshake-only.

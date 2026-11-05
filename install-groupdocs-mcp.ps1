@@ -142,7 +142,7 @@ function Invoke-Wizard {
 
   $pfProducts = @($allKeys | Where-Object { Test-ProductOnPlatform $mani $pfKey $_ } | Sort-Object)
   Write-Host "  Products: $($pfProducts -join ', ')"
-  Write-Host "  ('all' = every individual product; 'total' alone = the bundle of the products it contains - search is separate)"
+  Write-Host "  ('all' = every individual product; 'total' alone = the bundle of the products it contains - search, editor and assembly are separate)"
   $pAns = Read-Host "  Which products? (comma-separated) [all]"
   if ([string]::IsNullOrWhiteSpace($pAns)) { $pAns = 'all' }
 
@@ -380,7 +380,10 @@ if (-not $SkipRegistryCheck) {
       $info = Get-RegistryProductInfo $mani $platformKey $k $regIndex
       $registryInfo[$k] = $info
       if (-not $info.found) {
-        Write-Warn2 "'$k' has no MCP Registry entry ($($info.name)) - version not checked."
+        # Not in a reachable registry = not released yet (a new product is listed in the
+        # manifest before its first release). An entry for it would fail at first launch.
+        Write-Warn2 "'$k' is not published yet (no MCP Registry entry $($info.name)) - skipped. Use -SkipRegistryCheck to write it anyway."
+        [void]$resolved.Remove($k)
         continue
       }
       if (-not (Test-IsLatestVersion $version) -and @($info.versions) -notcontains $version.Trim()) {
@@ -390,6 +393,36 @@ if (-not $SkipRegistryCheck) {
     }
     if ($resolved.Count -eq 0) { throw "No requested product is published at version $version. Nothing to do." }
   }
+}
+
+# Products that reached the package registry only from some version on (manifest
+# nugetSince): older versions exist only as images. Checked after the registry lookup,
+# because for 'latest' the answer is whatever the registry lists as latest right now -
+# so the installer unblocks the product by itself once that release is out.
+if ($channel -eq $packageChannel) {
+  foreach ($k in @($resolved)) {
+    $since = Get-PackageSince $mani $platformKey $k
+    if (-not $since) { continue }
+    $sinceKey = ConvertTo-VersionKey $since
+    if (-not (Test-IsLatestVersion $version)) {
+      if ((ConvertTo-VersionKey $version.Trim()) -lt $sinceKey) {
+        Write-Warn2 "'$k' is on $channel only from $since; $($version.Trim()) exists only as an image - use -Channel docker for it, or pin $since or later. Skipping on $channel."
+        [void]$resolved.Remove($k)
+      }
+    } elseif ($registryInfo.ContainsKey($k) -and $registryInfo[$k].found -and (ConvertTo-VersionKey $registryInfo[$k].latest) -lt $sinceKey) {
+      Write-Warn2 "'$k' is on $channel only from $since, and its latest release ($($registryInfo[$k].latest)) is image-only - use -Channel docker for it. Skipping on $channel."
+      [void]$resolved.Remove($k)
+    }
+  }
+  if ($resolved.Count -eq 0) {
+    throw "All requested products are $channel-blocked - nothing left to install on the $channel channel. Re-run with -Channel docker."
+  }
+}
+
+# Products without a Docker Hub mirror run from GHCR whatever -Registry says (Get-ImageRef).
+if ($channel -ne $packageChannel -and $registry -eq 'dockerhub') {
+  $ghcrOnly = @($resolved | Where-Object { -not (Test-HasDockerHub $mani $_) })
+  if ($ghcrOnly.Count -gt 0) { Write-Warn2 "no Docker Hub image for $($ghcrOnly -join ', ') - using GHCR for those." }
 }
 
 $productLines = @($resolved | ForEach-Object {

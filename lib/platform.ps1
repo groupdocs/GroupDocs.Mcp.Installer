@@ -146,12 +146,33 @@ function Test-PackageBlocked ($mani, $platformKey, $key) {
   return $false
 }
 
+# The first version a product was published to the package registry, or $null when it
+# always was (or never is). GroupDocs.Parser reached NuGet in 26.11.0, once its engine
+# split the OCR models out; older versions exist only as images.
+function Get-PackageSince ($mani, $platformKey, $key) {
+  $ov = Get-ProductOverride $mani $platformKey $key 'packageSince'
+  if ($ov) { return "$ov" }
+  $p = $mani.products.$key
+  if ($platformKey -eq 'net' -and $p -and ($p.PSObject.Properties.Name -contains 'nugetSince') -and $p.nugetSince) { return "$($p.nugetSince)" }
+  return $null
+}
+
+# Whether the product's image is mirrored to Docker Hub (missing field = yes). Parser and
+# Total publish to GHCR only; their Docker Hub names do not exist.
+function Test-HasDockerHub ($mani, $key) {
+  $p = $mani.products.$key
+  if ($null -eq $p) { return $false }
+  if ($p.PSObject.Properties.Name -contains 'dockerHub') { return [bool]$p.dockerHub }
+  return $true
+}
+
 function Test-IsLatestVersion ([string]$version) {
   return ([string]::IsNullOrWhiteSpace($version) -or $version.Trim().ToLower() -eq 'latest')
 }
 
 function Get-ImageRef ($mani, $platformKey, $key, [string]$registry, [string]$version) {
-  $kind = if ($registry -eq 'dockerhub') { 'dockerhub' } else { 'ghcr' }
+  # No Docker Hub mirror for this product: GHCR is the only image (the installer warns once).
+  $kind = if ($registry -eq 'dockerhub' -and (Test-HasDockerHub $mani $key)) { 'dockerhub' } else { 'ghcr' }
   $tag  = if (Test-IsLatestVersion $version) { 'latest' } else { $version.Trim() }
   return "$(Get-ProductName $mani $platformKey $key $kind):$tag"
 }

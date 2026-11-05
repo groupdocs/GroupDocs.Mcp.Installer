@@ -16,7 +16,7 @@ Windows paths work with forward or backslashes (`D:/Storage/Documents`).
 | Sample | Client(s) | Products | Channel | Shows |
 |---|---|---|---|---|
 | `claude-desktop.all-products.docker` | Claude Desktop | all 12 (individual) | docker | The "give me everything" setup |
-| `claude-code.parser.docker` | Claude Code (CLI) | Parser | docker | Docker-only product + full path setup: separate output folder and a license file (all three `GROUPDOCS_*` settings mapped into the container) |
+| `claude-code.parser.docker` | Claude Code (CLI) | Parser | docker | Docker channel (Parser was Docker-only before 26.11.0) + full path setup: separate output folder and a license file (all three `GROUPDOCS_*` settings mapped into the container) |
 | `vscode.metadata-conversion-comparison.nuget` | VS Code / Copilot (user-level) | Metadata, Conversion, Comparison | nuget | Lightweight `dnx` trio for .NET devs — no Docker needed |
 | `cursor.conversion.docker` | Cursor | Conversion | docker | Single-product minimal setup |
 | `codex.metadata.nuget` | Codex CLI | Metadata | nuget | CLI-registered client (`codex mcp add`) |
@@ -29,8 +29,9 @@ Notes:
 
 - Every sample sets `"platform": "net"` — .NET, the only platform available today and the
   default when the key is absent.
-- **Parser, Search and Total are docker-only** (the packed tool exceeds NuGet.org's 250 MB
-  limit) — the installer refuses them on the nuget channel with an explanation.
+- **Search and Total are docker-only** (the packed tool exceeds NuGet.org's 250 MB
+  limit) — the installer refuses them on the nuget channel with an explanation. **Parser** is
+  on NuGet from 26.11.0; older versions are docker-only and refused on nuget the same way.
 - `licensePath: ""` runs in **evaluation mode** (safe); point it at your
   `.lic` file to lift the limits. Any GroupDocs license file name works
   (e.g. `GroupDocs.Total.lic`, `Conholdate.Total.lic`).

@@ -76,13 +76,20 @@ jobs:
       - name: NuGet-blocked refusal is enforced
         shell: pwsh
         run: |
-          try {
-            ./install-groupdocs-mcp.ps1 -Channel nuget -Products parser,search,total -Clients vscode-workspace -DryRun -SkipRegistryCheck
-            Write-Host "::error::expected the installer to throw for all-NuGet-blocked products"
-            exit 1
-          } catch {
-            if ($_.Exception.Message -notmatch 'nuget-blocked') { Write-Host "::error::threw for the wrong reason: $($_.Exception.Message)"; exit 1 }
-            Write-Host "refused as expected: $($_.Exception.Message)"
+          # search + total: never on NuGet. parser @ 26.10.2: on NuGet only from 26.11.0 (nugetSince).
+          $cases = @(
+            @{ Products = @('search','total'); Version = 'latest' },
+            @{ Products = @('parser');         Version = '26.10.2' }
+          )
+          foreach ($c in $cases) {
+            try {
+              ./install-groupdocs-mcp.ps1 -Channel nuget -Products $c.Products -Version $c.Version -Clients vscode-workspace -DryRun -SkipRegistryCheck
+              Write-Host "::error::expected a NuGet refusal for $($c.Products -join ',') @ $($c.Version)"
+              exit 1
+            } catch {
+              if ($_.Exception.Message -notmatch 'nuget-blocked') { Write-Host "::error::threw for the wrong reason: $($_.Exception.Message)"; exit 1 }
+              Write-Host "refused as expected ($($c.Products -join ',') @ $($c.Version)): $($_.Exception.Message)"
+            }
           }
 
       - name: Platform contract (planned / unknown platform, channel per platform)
